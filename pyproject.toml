@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cfbratings"
+version = "0.1.0"
+description = "College Football Ratings Engine (Colley, Massey, Elo, Hybrid) with Streamlit dashboard"
+authors = [{name="Brandon"}]
+dependencies = [
+    "numpy",
+    "requests",
+    "matplotlib",
+    "streamlit",
+    "plotly",
+    "python-dotenv"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cfbratings*"]
