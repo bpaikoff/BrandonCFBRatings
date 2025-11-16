@@ -11,11 +11,7 @@ Implements Colley, Massey, Elo, and Hybrid methods with JSON caching, CLI tools,
 - **Advanced insights**: Strength of Schedule, Momentum, and **PPoints**
 
 ## PPoints
-A custom metric rewarding scheduling difficulty:
-- Out-of-conference games: 1–5 points scaled by opponent ranking
-- Away games: ×1.5 multiplier
-- Wins: ×2 multiplier
-- Normal conference games: scaled to opponent ranking, away ×1.5
+A custom metric rewarding scheduling difficulty and performance
 
 ## Usage
 ```bash

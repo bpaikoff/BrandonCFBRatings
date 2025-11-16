@@ -1,6 +1,6 @@
 import streamlit as st
 from cfbratings.config import settings
-from cfbratings.io import fetch_teams, fetch_games
+from cfbratings.io import fetch_teams, fetch_games, ensure_snapshots
 from cfbratings.models.colley import build_colley, solve_colley
 from cfbratings.models.massey import build_massey, solve_massey
 from cfbratings.models.elo import run_elo
@@ -21,6 +21,7 @@ with col3:
 refresh = st.checkbox("Force refresh API (overwrite cache)", value=False)
 
 teams = fetch_teams(year, force_refresh=refresh)
+conference_map = {t["school"]: t.get("conference") for t in teams}
 games_payload = fetch_games(year, season_type=season_type, force_refresh=refresh)
 games = games_payload["data"] if isinstance(games_payload, dict) and "data" in games_payload else games_payload
 team_list = [t["school"] for t in teams]
@@ -52,10 +53,11 @@ else:
                             colley_weight=blend_colley, massey_weight=blend_massey,
                             prior_strength=colley_prior, ridge_lambda=massey_lambda, hfa=hfa)
 
+ensure_snapshots(year, method=method)
 recs = records(team_list, games)
 sos = strength_of_schedule(team_list, games, ratings)
 mom = momentum(team_list, games, ratings)
-pp = ppoints(team_list, games, ratings)
+pp = ppoints(team_list, games, ratings, conference_map)
 
 # Table
 st.subheader(f"Top 25 — {method.capitalize()} ({year}, {season_type})")

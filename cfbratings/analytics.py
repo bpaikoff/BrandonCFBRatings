@@ -1,4 +1,9 @@
+from statistics import mean
+
 import numpy as np
+from cfbratings.config import settings
+from cfbratings.io import load_weekly_ratings
+from statistics import median
 from typing import Dict, List, Tuple
 
 def records(team_list: List[str], games: List[dict]) -> Dict[str, Tuple[int, int]]:
@@ -65,54 +70,144 @@ def momentum(team_list: List[str], games: List[dict], base_ratings: Dict[str, fl
 
         return {t: last3(recent[t]) for t in team_list}
 
-## Adding **PPoints**
+def _quantiles(values: List[float], qs: List[float]) -> List[float]:
+    if not values:
+        return [0.0 for _ in qs]
+    vals = sorted(values)
+    n = len(vals)
+    out = []
+    for q in qs:
+        idx = min(max(int(round(q * (n - 1))), 0), n - 1)
+        out.append(vals[idx])
+    return out
 
-def ppoints(team_list: List[str], games: List[dict], ratings: Dict[str, float]) -> Dict[str, float]:
-    team_set = set(team_list)
+def _band_scale(x: float, lo_src: float, hi_src: float, lo_dst: float = 0.6, hi_dst: float = 1.6) -> float:
+    if hi_src <= lo_src:
+        return 1.0
+    t = (x - lo_src) / (hi_src - lo_src)
+    return lo_dst + t * (hi_dst - lo_dst)
+
+def compute_conference_strength_robust(
+    ratings: Dict[str, float],
+    conference_map: Dict[str, str],
+    top_percent: float = 0.35,        # elite slice
+    mid_lo: float = 0.40,             # middle band (depth)
+    mid_hi: float = 0.60,
+    elite_weight: float = 0.65,       # emphasis on elite median
+    depth_weight: float = 0.35,       # emphasis on middle median
+) -> Dict[str, float]:
+    # Group ratings by conference
+    conf_ratings: Dict[str, List[float]] = {}
+    for team, r in ratings.items():
+        conf = conference_map.get(team, "Unknown")
+        conf_ratings.setdefault(conf, []).append(r)
+
+    # Compute robust per-conference score
+    conf_score: Dict[str, float] = {}
+    for conf, vals in conf_ratings.items():
+        vals_sorted = sorted(vals)
+        n = len(vals_sorted)
+        if n == 0:
+            conf_score[conf] = 1.0
+            continue
+
+        # Elite median: median of top_percent slice
+        cut = max(int(n * (1 - top_percent)), 0)
+        elite_slice = vals_sorted[cut:] if cut < n else vals_sorted[-1:]
+        elite_med = median(elite_slice) if elite_slice else vals_sorted[-1]
+
+        # Depth median: median of middle band
+        lo_idx = max(int(n * mid_lo), 0)
+        hi_idx = min(int(n * mid_hi), n)
+        mid_slice = vals_sorted[lo_idx:hi_idx] if hi_idx > lo_idx else vals_sorted[lo_idx:lo_idx+1]
+        depth_med = median(mid_slice) if mid_slice else median(vals_sorted)
+
+        # Robust composite
+        score = elite_weight * elite_med + depth_weight * depth_med
+        conf_score[conf] = score
+
+    # Scale to wider band for separation
+    src_min = min(conf_score.values()) if conf_score else 0.0
+    src_max = max(conf_score.values()) if conf_score else 1.0
+
+    conf_strength: Dict[str, float] = {
+        conf: _band_scale(val, src_min, src_max, lo_dst=0.6, hi_dst=1.6)
+        for conf, val in conf_score.items()
+    }
+    return conf_strength
+
+def ppoints(team_list, games, ratings, conference_map, method="hybrid", weight_current=0.5):
     scores = {t: 0.0 for t in team_list}
 
-    # Helper: scale opponent rating to 1–5
-    def scale_rating(r: float, all_ratings: List[float]) -> float:
-        if not all_ratings:
-            return 1.0
-        min_r, max_r = min(all_ratings), max(all_ratings)
-        if max_r == min_r:
-            return 1.0
-        return 1 + 4 * (r - min_r) / (max_r - min_r)
+    # Current conference strength (end of season snapshot)
+    current_conf_strength = compute_conference_strength_robust(ratings, conference_map)
 
-    all_ratings = list(ratings.values())
+    # Current rank map for tiering
+    sorted_current = sorted(ratings.items(), key=lambda kv: kv[1], reverse=True)
+    current_rank_map = {team: rank+1 for rank, (team, _) in enumerate(sorted_current)}
+
+    def tier_points(rank: int) -> int:
+        if rank <= 10: return 8
+        elif rank <= 25: return 5
+        elif rank <= 40: return 3
+        elif rank <= 60: return 2
+        else: return 1
 
     for g in games:
+        loss_penalty_factor = 4.0  # tune this constant
+        extra_win_factor = 1.0
+
         if not g.get("completed", False):
             continue
         hp, ap = g.get("homePoints"), g.get("awayPoints")
         if hp is None or ap is None:
             continue
         home, away = g["homeTeam"], g["awayTeam"]
-        if home not in team_set or away not in team_set:
-            continue  # skip non-FBS
+        week = g.get("week", 0)
 
-        # Opponent rating scaled
-        opp_rating_home = scale_rating(ratings.get(away, 0.0), all_ratings)
-        opp_rating_away = scale_rating(ratings.get(home, 0.0), all_ratings)
+        # Weekly ratings snapshot for game-time rank
+        week_ratings = load_weekly_ratings(settings.year, week, method) or ratings
+        sorted_week = sorted(week_ratings.items(), key=lambda kv: kv[1], reverse=True)
+        week_rank_map = {team: rank+1 for rank, (team, _) in enumerate(sorted_week)}
 
-        # Base points
-        base_home = opp_rating_home
-        base_away = opp_rating_away
+        # Tier points at game time vs current
+        game_points_home = tier_points(week_rank_map.get(away, 1000))
+        game_points_away = tier_points(week_rank_map.get(home, 1000))
+        current_points_home = tier_points(current_rank_map.get(away, 1000))
+        current_points_away = tier_points(current_rank_map.get(home, 1000))
+
+        # Blend
+        opp_points_home = (1 - weight_current) * game_points_home + weight_current * current_points_home
+        opp_points_away = (1 - weight_current) * game_points_away + weight_current * current_points_away
 
         # Away multiplier
-        base_home *= 1.0
-        base_away *= 1.5
+        base_home = opp_points_home * 1.00
+        base_away = opp_points_away * 1.20
+
+        # Conference strength blending
+        week_conf_strength = compute_conference_strength_robust(week_ratings, conference_map)
+        home_conf, away_conf = g.get("homeConference"), g.get("awayConference")
+        home_strength = (1 - weight_current) * week_conf_strength.get(home_conf, 1.0) + weight_current * current_conf_strength.get(home_conf, 1.0)
+        away_strength = (1 - weight_current) * week_conf_strength.get(away_conf, 1.0) + weight_current * current_conf_strength.get(away_conf, 1.0)
+
+        base_home *= away_strength
+        base_away *= home_strength
+
+        # Non-conference multiplier
+        if home_conf and away_conf and home_conf != away_conf:
+            loss_penalty_factor = 2.0
+            extra_win_factor = 1.5
 
         # Win multiplier
-        if hp > ap:
-            scores[home] += base_home * 2
-            scores[away] += base_away
-        elif ap > hp:
-            scores[home] += base_home
-            scores[away] += base_away * 2
+        if home not in scores or away not in scores:
+            continue
         else:
-            scores[home] += base_home
-            scores[away] += base_away
+            if hp > ap:
+                scores[home] += extra_win_factor * base_home
+                scores[away] -= loss_penalty_factor / max(opp_points_home, 1.0)
+            elif ap > hp:
+                scores[away] += extra_win_factor * base_away
+                scores[home] -= loss_penalty_factor / max(opp_points_away, 1.0)
+
 
     return scores
