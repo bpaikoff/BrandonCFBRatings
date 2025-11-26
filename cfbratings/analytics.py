@@ -186,9 +186,11 @@ def ppoints(team_list, games, ratings, conference_map, method="hybrid", weight_c
 
         # Conference strength blending
         week_conf_strength = compute_conference_strength_robust(week_ratings, conference_map)
-        home_conf, away_conf = g.get("homeConference"), g.get("awayConference")
-        home_strength = (1 - weight_current) * week_conf_strength.get(home_conf, 1.0) + weight_current * current_conf_strength.get(home_conf, 1.0)
-        away_strength = (1 - weight_current) * week_conf_strength.get(away_conf, 1.0) + weight_current * current_conf_strength.get(away_conf, 1.0)
+        home_conf = g.get("homeConference")
+        away_conf = g.get("awayConference")
+        # Use 1.0 as default strength if conference data is missing
+        home_strength = (1 - weight_current) * week_conf_strength.get(home_conf, 1.0) + weight_current * current_conf_strength.get(home_conf, 1.0) if home_conf else 1.0
+        away_strength = (1 - weight_current) * week_conf_strength.get(away_conf, 1.0) + weight_current * current_conf_strength.get(away_conf, 1.0) if away_conf else 1.0
 
         base_home *= away_strength
         base_away *= home_strength

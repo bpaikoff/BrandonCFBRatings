@@ -76,7 +76,11 @@ def ensure_snapshots(year: int, method: str = "hybrid") -> None:
     games = games_payload["data"]
 
     team_list = [t["school"] for t in teams]
-    max_week = max(g.get("week", 0) for g in games if g.get("completed", False))
+    completed_games = [g for g in games if g.get("completed", False)]
+    max_week = max((g.get("week", 0) for g in completed_games), default=0)
+
+    if max_week == 0:
+        return  # No completed games, nothing to snapshot
 
     for week in range(1, max_week + 1):
         fname = os.path.join(settings.cache_dir, f"ratings_{year}_{method}_week{week}.json")

@@ -3,6 +3,20 @@ from typing import Dict, List
 
 def run_elo(team_list: List[str], games: List[dict], init: float = 1500.0, k: float = 25.0,
             regress_to_mean: float = 0.20, hfa: float = 2.1) -> Dict[str, float]:
+    """
+    Calculate Elo ratings for teams based on game results.
+
+    Args:
+        team_list: List of team names
+        games: List of game dictionaries
+        init: Initial Elo rating (default 1500.0)
+        k: K-factor for Elo updates (default 25.0)
+        regress_to_mean: Weekly regression coefficient (default 0.20)
+        hfa: Home field advantage in Elo points (default 2.1)
+
+    Returns:
+        Dictionary mapping team names to Elo ratings
+    """
     # Elo on margins via expected win probability (logistic), with HFA added to home rating
     ratings = {t: init for t in team_list}
     team_to_idx = {t: i for i, t in enumerate(team_list)}

@@ -14,8 +14,15 @@ def plot_top_n(ratings: Dict[str, float], records: Dict[str, Tuple[int, int]], n
     plt.xlabel("Rating")
     plt.title(title or "Top Teams")
     # Scale x-limits based on data spread
-    xmin = min(values) - 0.05 * (max(values) - min(values))
-    xmax = max(values) + 0.05 * (max(values) - min(values))
+    value_range = max(values) - min(values)
+    if value_range > 1e-8:
+        xmin = min(values) - 0.05 * value_range
+        xmax = max(values) + 0.05 * value_range
+    else:
+        # All values are identical, use a small default range
+        avg_value = (max(values) + min(values)) / 2
+        xmin = avg_value - 0.1
+        xmax = avg_value + 0.1
     plt.xlim(xmin, xmax)
     plt.grid(axis="x", alpha=0.3)
     for i, rating in enumerate(values[::-1]):
