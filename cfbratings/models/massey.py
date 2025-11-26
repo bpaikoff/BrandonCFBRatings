@@ -1,8 +1,21 @@
 import numpy as np
 from typing import List, Dict
 
-def build_massey(team_list: List[str], games: List[dict], ridge_lambda: float = 0.01, hfa: float = 2.1):
+def build_massey(team_list: List[str], games: List[dict], ridge_lambda: float = 0.01, hfa: float = 2.1, max_margin: float = 50.0):
+    """
+    Build Massey rating system matrices.
+
+    Args:
+        team_list: List of team names
+        games: List of game dictionaries
+        ridge_lambda: Ridge regularization parameter
+        hfa: Home field advantage in points
+        max_margin: Maximum margin to prevent outliers (default 50 points)
+    """
     n = len(team_list)
+    if n == 0:
+        return np.array([[]]), np.array([])
+
     team_to_idx = {t: i for i, t in enumerate(team_list)}
     # Massey: A r = y, where A encodes matchups, y = margin (home - away adjusted)
     rows = []
@@ -18,6 +31,8 @@ def build_massey(team_list: List[str], games: List[dict], ridge_lambda: float = 
             continue
         i = team_to_idx[home]; j = team_to_idx[away]
         margin = (hp - ap) - hfa  # subtract home-field advantage
+        # Cap extreme margins to reduce impact of blowouts
+        margin = np.clip(margin, -max_margin, max_margin)
         row = np.zeros(n); row[i] = 1.0; row[j] = -1.0
         rows.append(row); y.append(margin)
     if len(rows) == 0:
@@ -37,4 +52,17 @@ def build_massey(team_list: List[str], games: List[dict], ridge_lambda: float = 
     return M, b
 
 def solve_massey(M: np.ndarray, b: np.ndarray) -> np.ndarray:
-    return np.linalg.solve(M, b)
+    """
+    Solve the Massey matrix equation M·r = b.
+    Returns zero ratings for all teams if matrix is singular.
+    """
+    if len(b) == 0:
+        return np.array([])
+
+    try:
+        return np.linalg.solve(M, b)
+    except np.linalg.LinAlgError:
+        # Matrix is singular (e.g., isolated teams or degenerate cases)
+        # Return zero ratings (Massey ratings are centered at 0)
+        n = len(b)
+        return np.zeros(n)

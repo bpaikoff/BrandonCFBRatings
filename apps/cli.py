@@ -51,7 +51,8 @@ def main():
     mom = momentum(team_list, games, ratings)
     pp = ppoints(team_list, games, ratings, conference_map)
 
-    latest_week = max(g.get("week", 0) for g in games if g.get("completed", False))
+    completed_games = [g for g in games if g.get("completed", False)]
+    latest_week = max((g.get("week", 0) for g in completed_games), default=0)
 
     conference_map = {t["school"]: t.get("conference") for t in teams}
     conf_strength = compute_conference_strength_robust(ratings, conference_map)

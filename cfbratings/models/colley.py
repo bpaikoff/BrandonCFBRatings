@@ -2,7 +2,21 @@ import numpy as np
 from typing import Dict, List, Tuple
 
 def build_colley(team_list: List[str], games: List[dict], prior_strength: float = 2.0) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Build Colley matrix for ranking teams.
+
+    Args:
+        team_list: List of team names
+        games: List of game dictionaries
+        prior_strength: Prior strength parameter (default 2.0)
+
+    Returns:
+        Tuple of (C matrix, b vector) for solving C·r = b
+    """
     n = len(team_list)
+    if n == 0:
+        return np.array([[]]), np.array([])
+
     team_to_idx = {t: i for i, t in enumerate(team_list)}
     wins = np.zeros(n, dtype=float)
     losses = np.zeros(n, dtype=float)
@@ -41,4 +55,17 @@ def build_colley(team_list: List[str], games: List[dict], prior_strength: float 
     return C, b
 
 def solve_colley(C: np.ndarray, b: np.ndarray) -> np.ndarray:
-    return np.linalg.solve(C, b)
+    """
+    Solve the Colley matrix equation C·r = b.
+    Returns default ratings (0.5 for all teams) if matrix is singular.
+    """
+    if len(b) == 0:
+        return np.array([])
+
+    try:
+        return np.linalg.solve(C, b)
+    except np.linalg.LinAlgError:
+        # Matrix is singular (e.g., isolated teams or no games)
+        # Return default Colley rating of 0.5 for all teams
+        n = len(b)
+        return np.full(n, 0.5)

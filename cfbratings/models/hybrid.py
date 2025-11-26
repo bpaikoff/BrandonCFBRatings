@@ -14,7 +14,11 @@ def hybrid_rating(team_list: List[str], games: List[dict],
 
     # Normalize scales (Colley is ~[0,1], Massey centered ~0; z-score both then blend)
     def zscore(x):
-        m = np.mean(x); s = np.std(x) if np.std(x) > 1e-8 else 1.0
+        m = np.mean(x)
+        s = np.std(x)
+        # Avoid division by zero if all ratings are identical
+        if s < 1e-8:
+            s = 1.0
         return (x - m) / s
 
     zc = zscore(colley_r)

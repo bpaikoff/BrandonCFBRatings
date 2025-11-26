@@ -8,7 +8,12 @@ def snapshot_season(year: int, method: str = "hybrid"):
     games = games_payload["data"]
 
     team_list = [t["school"] for t in teams]
-    max_week = max(g.get("week", 0) for g in games if g.get("completed", False))
+    completed_games = [g for g in games if g.get("completed", False)]
+    max_week = max((g.get("week", 0) for g in completed_games), default=0)
+
+    if max_week == 0:
+        print(f"No completed games found for year {year}. Skipping snapshot.")
+        return
 
     for week in range(1, max_week + 1):
         # Only include games up to this week
