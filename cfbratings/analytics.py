@@ -1,215 +1,211 @@
-from statistics import mean
+"""Team-level analytics built on top of a fitted :class:`RatingResult`."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from statistics import median
 
 import numpy as np
-from cfbratings.config import settings
-from cfbratings.io import load_weekly_ratings
-from statistics import median
-from typing import Dict, List, Tuple
+import pandas as pd
 
-def records(team_list: List[str], games: List[dict]) -> Dict[str, Tuple[int, int]]:
-    team_to_idx = {t: i for i, t in enumerate(team_list)}
-    w = {t: 0 for t in team_list}
-    l = {t: 0 for t in team_list}
+from .data.schema import Game, Record
+from .models.base import RatingResult, Ratings
+from .predict import MarginCalibrator
+
+
+def records(teams: Sequence[str], games: Sequence[Game]) -> dict[str, Record]:
+    wins = dict.fromkeys(teams, 0)
+    losses = dict.fromkeys(teams, 0)
+    ties = dict.fromkeys(teams, 0)
     for g in games:
-        if not g.get("completed", False):
+        if not g.has_score or g.home not in wins or g.away not in wins:
             continue
-        hp = g.get("homePoints"); ap = g.get("awayPoints")
-        if hp is None or ap is None:
-            continue
-        home = g["homeTeam"]; away = g["awayTeam"]
-        if home not in team_to_idx or away not in team_to_idx:
-            continue
-        if hp > ap:
-            w[home] += 1; l[away] += 1
-        elif ap > hp:
-            w[away] += 1; l[home] += 1
+        m = g.margin
+        if m > 0:
+            wins[g.home] += 1
+            losses[g.away] += 1
+        elif m < 0:
+            wins[g.away] += 1
+            losses[g.home] += 1
         else:
-            w[home] += 1; w[away] += 1
-    return {t: (w[t], l[t]) for t in team_list}
+            ties[g.home] += 1
+            ties[g.away] += 1
+    return {t: Record(wins[t], losses[t], ties[t]) for t in teams}
 
-def strength_of_schedule(team_list: List[str], games: List[dict], base_ratings: Dict[str, float]) -> Dict[str, float]:
-    # Average opponent rating weighted by games played
-    opps = {t: [] for t in team_list}
+
+def strength_of_schedule(teams: Sequence[str], games: Sequence[Game], ratings: Mapping[str, float]) -> Ratings:
+    """Mean opponent rating over games played (same units as ``ratings``)."""
+    opp: dict[str, list[float]] = {t: [] for t in teams}
     for g in games:
-        if not g.get("completed", False):
+        if not g.has_score or g.home not in opp or g.away not in opp:
             continue
-        home = g.get("homeTeam"); away = g.get("awayTeam")
-        if home in opps and away in opps:
-            opps[home].append(base_ratings.get(away, 0.0))
-            opps[away].append(base_ratings.get(home, 0.0))
-    return {t: float(np.mean(opps[t])) if opps[t] else 0.0 for t in team_list}
+        opp[g.home].append(ratings.get(g.away, 0.0))
+        opp[g.away].append(ratings.get(g.home, 0.0))
+    return {t: float(np.mean(v)) if v else 0.0 for t, v in opp.items()}
 
-def momentum(team_list: List[str], games: List[dict], base_ratings: Dict[str, float]) -> Dict[str, float]:
-        recent = {t: [] for t in team_list}
-        team_set = set(team_list)
 
-        for g in sorted(games, key=lambda x: (x.get("season", 0), x.get("week", 0))):
-            if not g.get("completed", False):
-                continue
-            hp, ap = g.get("homePoints"), g.get("awayPoints")
-            if hp is None or ap is None:
-                continue
-            home, away = g["homeTeam"], g["awayTeam"]
+def momentum(
+    teams: Sequence[str],
+    games: Sequence[Game],
+    result: RatingResult,
+    calibrator: MarginCalibrator,
+    *,
+    last_n: int = 3,
+) -> Ratings:
+    """Average points-above-expectation over each team's last ``last_n`` games.
 
-            # Skip if either team not in FBS list
-            if home not in team_set or away not in team_set:
-                continue
+    "Expectation" is the calibrated predicted margin, so momentum is in points for every
+    model. Positive values mean the team has recently beaten its own rating.
+    """
+    resid: dict[str, list[float]] = {t: [] for t in teams}
+    for g in sorted((g for g in games if g.has_score), key=lambda g: g.order_key):
+        if g.home not in resid or g.away not in resid:
+            continue
+        expected = calibrator.predict_margin(result.get(g.home), result.get(g.away), g.neutral_site)
+        delta = g.margin - expected
+        resid[g.home].append(delta)
+        resid[g.away].append(-delta)
+    return {t: float(np.mean(v[-last_n:])) if v else 0.0 for t, v in resid.items()}
 
-            eh = base_ratings.get(home, 0.0)
-            ea = base_ratings.get(away, 0.0)
-            expected_margin = eh - ea
-            actual_margin = hp - ap
-            delta_h = actual_margin - expected_margin
-            delta_a = -delta_h
 
-            recent[home].append(delta_h)
-            recent[away].append(delta_a)
+def _band_scale(x: float, lo_src: float, hi_src: float, lo_dst: float, hi_dst: float) -> float:
+    if hi_src - lo_src < 1e-12:
+        return (lo_dst + hi_dst) / 2.0
+    return lo_dst + (x - lo_src) / (hi_src - lo_src) * (hi_dst - lo_dst)
 
-        def last3(xs):
-            return float(np.mean(xs[-3:])) if xs else 0.0
 
-        return {t: last3(recent[t]) for t in team_list}
+def conference_strength(
+    ratings: Mapping[str, float],
+    conference_map: Mapping[str, str | None],
+    *,
+    top_fraction: float = 0.35,
+    mid_band: tuple[float, float] = (0.40, 0.60),
+    elite_weight: float = 0.65,
+    depth_weight: float = 0.35,
+    band: tuple[float, float] = (0.6, 1.6),
+) -> dict[str, float]:
+    """Robust conference strength index scaled to ``band`` (default 0.6 - 1.6).
 
-def _quantiles(values: List[float], qs: List[float]) -> List[float]:
-    if not values:
-        return [0.0 for _ in qs]
-    vals = sorted(values)
-    n = len(vals)
-    out = []
-    for q in qs:
-        idx = min(max(int(round(q * (n - 1))), 0), n - 1)
-        out.append(vals[idx])
-    return out
-
-def _band_scale(x: float, lo_src: float, hi_src: float, lo_dst: float = 0.6, hi_dst: float = 1.6) -> float:
-    if hi_src <= lo_src:
-        return 1.0
-    t = (x - lo_src) / (hi_src - lo_src)
-    return lo_dst + t * (hi_dst - lo_dst)
-
-def compute_conference_strength_robust(
-    ratings: Dict[str, float],
-    conference_map: Dict[str, str],
-    top_percent: float = 0.35,        # elite slice
-    mid_lo: float = 0.40,             # middle band (depth)
-    mid_hi: float = 0.60,
-    elite_weight: float = 0.65,       # emphasis on elite median
-    depth_weight: float = 0.35,       # emphasis on middle median
-) -> Dict[str, float]:
-    # Group ratings by conference
-    conf_ratings: Dict[str, List[float]] = {}
+    The raw score blends the median of each conference's top ``top_fraction`` of teams
+    (how good are its contenders) with the median of its middle band (how deep is it),
+    which is far less sensitive to one outlier program than a plain mean.
+    """
+    by_conf: dict[str, list[float]] = {}
     for team, r in ratings.items():
-        conf = conference_map.get(team, "Unknown")
-        conf_ratings.setdefault(conf, []).append(r)
-
-    # Compute robust per-conference score
-    conf_score: Dict[str, float] = {}
-    for conf, vals in conf_ratings.items():
-        vals_sorted = sorted(vals)
-        n = len(vals_sorted)
-        if n == 0:
-            conf_score[conf] = 1.0
-            continue
-
-        # Elite median: median of top_percent slice
-        cut = max(int(n * (1 - top_percent)), 0)
-        elite_slice = vals_sorted[cut:] if cut < n else vals_sorted[-1:]
-        elite_med = median(elite_slice) if elite_slice else vals_sorted[-1]
-
-        # Depth median: median of middle band
-        lo_idx = max(int(n * mid_lo), 0)
-        hi_idx = min(int(n * mid_hi), n)
-        mid_slice = vals_sorted[lo_idx:hi_idx] if hi_idx > lo_idx else vals_sorted[lo_idx:lo_idx+1]
-        depth_med = median(mid_slice) if mid_slice else median(vals_sorted)
-
-        # Robust composite
-        score = elite_weight * elite_med + depth_weight * depth_med
-        conf_score[conf] = score
-
-    # Scale to wider band for separation
-    src_min = min(conf_score.values()) if conf_score else 0.0
-    src_max = max(conf_score.values()) if conf_score else 1.0
-
-    conf_strength: Dict[str, float] = {
-        conf: _band_scale(val, src_min, src_max, lo_dst=0.6, hi_dst=1.6)
-        for conf, val in conf_score.items()
-    }
-    return conf_strength
-
-def ppoints(team_list, games, ratings, conference_map, method="hybrid", weight_current=0.5):
-    scores = {t: 0.0 for t in team_list}
-
-    # Current conference strength (end of season snapshot)
-    current_conf_strength = compute_conference_strength_robust(ratings, conference_map)
-
-    # Current rank map for tiering
-    sorted_current = sorted(ratings.items(), key=lambda kv: kv[1], reverse=True)
-    current_rank_map = {team: rank+1 for rank, (team, _) in enumerate(sorted_current)}
-
-    def tier_points(rank: int) -> int:
-        if rank <= 10: return 8
-        elif rank <= 25: return 5
-        elif rank <= 40: return 3
-        elif rank <= 60: return 2
-        else: return 1
-
-    for g in games:
-        loss_penalty_factor = 4.0  # tune this constant
-        extra_win_factor = 1.0
-
-        if not g.get("completed", False):
-            continue
-        hp, ap = g.get("homePoints"), g.get("awayPoints")
-        if hp is None or ap is None:
-            continue
-        home, away = g["homeTeam"], g["awayTeam"]
-        week = g.get("week", 0)
-
-        # Weekly ratings snapshot for game-time rank
-        week_ratings = load_weekly_ratings(settings.year, week, method) or ratings
-        sorted_week = sorted(week_ratings.items(), key=lambda kv: kv[1], reverse=True)
-        week_rank_map = {team: rank+1 for rank, (team, _) in enumerate(sorted_week)}
-
-        # Tier points at game time vs current
-        game_points_home = tier_points(week_rank_map.get(away, 1000))
-        game_points_away = tier_points(week_rank_map.get(home, 1000))
-        current_points_home = tier_points(current_rank_map.get(away, 1000))
-        current_points_away = tier_points(current_rank_map.get(home, 1000))
-
-        # Blend
-        opp_points_home = (1 - weight_current) * game_points_home + weight_current * current_points_home
-        opp_points_away = (1 - weight_current) * game_points_away + weight_current * current_points_away
-
-        # Away multiplier
-        base_home = opp_points_home * 1.00
-        base_away = opp_points_away * 1.20
-
-        # Conference strength blending
-        week_conf_strength = compute_conference_strength_robust(week_ratings, conference_map)
-        home_conf = g.get("homeConference")
-        away_conf = g.get("awayConference")
-        # Use 1.0 as default strength if conference data is missing
-        home_strength = (1 - weight_current) * week_conf_strength.get(home_conf, 1.0) + weight_current * current_conf_strength.get(home_conf, 1.0) if home_conf else 1.0
-        away_strength = (1 - weight_current) * week_conf_strength.get(away_conf, 1.0) + weight_current * current_conf_strength.get(away_conf, 1.0) if away_conf else 1.0
-
-        base_home *= away_strength
-        base_away *= home_strength
-
-        # Non-conference multiplier
-        if home_conf and away_conf and home_conf != away_conf:
-            loss_penalty_factor = 2.0
-            extra_win_factor = 1.5
-
-        # Win multiplier
-        if home not in scores or away not in scores:
-            continue
-        else:
-            if hp > ap:
-                scores[home] += extra_win_factor * base_home
-                scores[away] -= loss_penalty_factor / max(opp_points_home, 1.0)
-            elif ap > hp:
-                scores[away] += extra_win_factor * base_away
-                scores[home] -= loss_penalty_factor / max(opp_points_away, 1.0)
+        by_conf.setdefault(conference_map.get(team) or "Independent", []).append(float(r))
+    raw: dict[str, float] = {}
+    for conf, vals in by_conf.items():
+        vals = sorted(vals)
+        n = len(vals)
+        cut = min(max(int(n * (1.0 - top_fraction)), 0), n - 1)
+        elite = median(vals[cut:])
+        lo = max(int(n * mid_band[0]), 0)
+        hi = max(min(int(n * mid_band[1]), n), lo + 1)
+        depth = median(vals[lo:hi])
+        raw[conf] = elite_weight * elite + depth_weight * depth
+    if not raw:
+        return {}
+    lo_src, hi_src = min(raw.values()), max(raw.values())
+    return {c: _band_scale(v, lo_src, hi_src, band[0], band[1]) for c, v in raw.items()}
 
 
-    return scores
+def conference_table(
+    ratings: Mapping[str, float],
+    conference_map: Mapping[str, str | None],
+    recs: Mapping[str, Record] | None = None,
+) -> pd.DataFrame:
+    strength = conference_strength(ratings, conference_map)
+    rows = []
+    for conf, idx in strength.items():
+        members = [t for t, c in conference_map.items() if (c or "Independent") == conf and t in ratings]
+        vals = [ratings[t] for t in members]
+        top = max(members, key=lambda t: ratings[t]) if members else ""
+        row = {
+            "conference": conf,
+            "strength_index": idx,
+            "teams": len(members),
+            "mean_rating": float(np.mean(vals)) if vals else 0.0,
+            "median_rating": float(np.median(vals)) if vals else 0.0,
+            "top_team": top,
+        }
+        if recs is not None:
+            row["wins"] = sum(recs[t].wins for t in members if t in recs)
+            row["losses"] = sum(recs[t].losses for t in members if t in recs)
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    return df.sort_values("strength_index", ascending=False).reset_index(drop=True)
+
+
+def team_table(
+    teams: Sequence[str],
+    games: Sequence[Game],
+    result: RatingResult,
+    calibrator: MarginCalibrator,
+    conference_map: Mapping[str, str | None] | None = None,
+    *,
+    ppoints: Mapping[str, float] | None = None,
+) -> pd.DataFrame:
+    """One row per team: rank, rating, record, SOS, momentum (and PPoints when given)."""
+    recs = records(teams, games)
+    sos = strength_of_schedule(teams, games, result.ratings)
+    mom = momentum(teams, games, result, calibrator)
+    sos_rank = {t: i + 1 for i, (t, _) in enumerate(sorted(sos.items(), key=lambda kv: -kv[1]))}
+    rows = []
+    for rank, (team, rating) in enumerate(result.ranked(), start=1):
+        row = {
+            "rank": rank,
+            "team": team,
+            "conference": (conference_map or {}).get(team) or "Independent",
+            "record": str(recs[team]),
+            "wins": recs[team].wins,
+            "losses": recs[team].losses,
+            "rating": rating,
+            "sos": sos[team],
+            "sos_rank": sos_rank[team],
+            "momentum": mom[team],
+        }
+        if ppoints is not None:
+            row["ppoints"] = float(ppoints.get(team, 0.0))
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def schedule_table(
+    team: str,
+    games: Sequence[Game],
+    result: RatingResult,
+    calibrator: MarginCalibrator,
+) -> pd.DataFrame:
+    """Game-by-game view for one team with expected vs actual margins."""
+    rank = result.rank_map()
+    rows = []
+    for g in sorted((g for g in games if team in (g.home, g.away)), key=lambda g: g.order_key):
+        opp = g.opponent(team)
+        is_home = g.home == team
+        rh, ra = result.get(g.home), result.get(g.away)
+        exp_home = calibrator.predict_margin(rh, ra, g.neutral_site)
+        exp = exp_home if is_home else -exp_home
+        p = calibrator.win_prob_from_margin(exp)
+        row = {
+            "week": g.week,
+            "type": "Bowl" if g.season_type == "postseason" else "Regular",
+            "opponent": opp,
+            "opp_rank": rank.get(opp),
+            "site": "Neutral" if g.neutral_site else ("Home" if is_home else "Away"),
+            "expected_margin": exp,
+            "win_prob": p,
+        }
+        if g.has_score:
+            actual = g.margin_for(team)
+            row.update(
+                {
+                    "result": "W" if actual > 0 else "L" if actual < 0 else "T",
+                    "score": f"{g.home_points}-{g.away_points}" if is_home else f"{g.away_points}-{g.home_points}",
+                    "actual_margin": actual,
+                    "vs_expected": actual - exp,
+                }
+            )
+        rows.append(row)
+    return pd.DataFrame(rows)

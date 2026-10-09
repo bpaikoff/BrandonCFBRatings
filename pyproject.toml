@@ -1,21 +1,71 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "cfbratings"
-version = "0.1.0"
-description = "College Football Ratings Engine (Colley, Massey, Elo, Hybrid) with Streamlit dashboard"
-authors = [{name="Brandon"}]
-dependencies = [
-    "numpy",
-    "requests",
-    "matplotlib",
-    "streamlit",
-    "plotly",
-    "python-dotenv"
+version = "1.0.0"
+description = "College football rating systems (Colley, Massey, Elo, Bradley-Terry, Hybrid) with analytics, walk-forward backtesting and a Streamlit dashboard"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Brandon Paikoff" }]
+keywords = ["college football", "ratings", "rankings", "elo", "massey", "colley", "backtesting"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
 ]
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+app = ["streamlit>=1.40", "plotly>=5.24"]
+dev = [
+    "streamlit>=1.40",
+    "plotly>=5.24",
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+cfbratings = "cfbratings.cli:main"
+
+[project.urls]
+Repository = "https://github.com/bpaikoff/BrandonCFBRatings"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["cfbratings*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "C4", "PIE"]
+ignore = ["RUF012", "B905", "E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501", "RUF001"]
+"apps/*" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -ra"
+markers = ["slow: slower end-to-end tests (dashboard smoke test)"]
+filterwarnings = ["ignore::DeprecationWarning:streamlit.*"]
+
+[tool.coverage.run]
+source = ["cfbratings"]
