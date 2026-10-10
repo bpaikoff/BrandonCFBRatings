@@ -24,7 +24,7 @@ def grid_search(
     metric: str = "log_loss",
     start_week: int = 4,
     settings: Settings | None = None,
-    warmup_games: Sequence[Game] | None = None,
+    prior: Any = None,
     progress: Callable[[int, int, dict[str, Any]], None] | None = None,
 ) -> pd.DataFrame:
     """Evaluate every combination in ``grid``; rows sorted best-first by ``metric``."""
@@ -38,7 +38,7 @@ def grid_search(
             games,
             BacktestConfig(method=method, params=params, start_week=start_week),
             settings=settings,
-            warmup_games=warmup_games,
+            prior=prior,
         )
         summary = res.summary()
         row = {**params, **{k: v for k, v in summary.items() if not k.startswith("baseline_")}}

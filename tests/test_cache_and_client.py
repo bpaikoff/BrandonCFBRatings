@@ -6,7 +6,8 @@ import pytest
 
 from cfbratings.config import Settings
 from cfbratings.data.cache import JsonCache
-from cfbratings.data.cfbd import CFBDClient, CFBDError, consensus_spreads, load_season
+from cfbratings.data.cfbd import CFBDClient, CFBDError, consensus_spreads, load_season, load_seasons
+from cfbratings.data.schema import FCS_POOL
 
 
 def test_cache_round_trip_and_ttl(tmp_path, monkeypatch):
@@ -97,9 +98,12 @@ def test_client_caches_and_filters(tmp_path):
     }
     session = _FakeSession(routes)
     client = CFBDClient(Settings(api_key="secret", cache_dir=tmp_path), session=session)
-    teams, games = load_season(2024, "regular", client=client)
+    teams, games = load_season(2024, "regular", client=client, fcs="drop")
     assert [t.school for t in teams] == ["A", "B"]
     assert [g.id for g in games] == [1]  # FCS game dropped
+    teams, games = load_season(2024, "regular", client=client)  # default: pool
+    assert [t.school for t in teams] == ["A", "B", FCS_POOL]
+    assert [g.id for g in games] == [1, 2] and games[1].away == FCS_POOL and games[1].away_name == "FCS U"
     assert client.lines(2024, "regular") == {1: -6.5}
     n_calls = len(session.calls)
     load_season(2024, "regular", client=client)
@@ -107,6 +111,31 @@ def test_client_caches_and_filters(tmp_path):
     assert len(session.calls) == n_calls  # served from cache
     load_season(2024, "regular", client=client, force_refresh=True)
     assert len(session.calls) == n_calls + 2
+    with pytest.raises(ValueError):
+        load_season(2024, "regular", client=client, fcs="nope")
+
+
+def test_load_seasons_merges_rosters(tmp_path):
+    routes = {
+        "/teams/fbs": [{"school": "A"}, {"school": "B"}],
+        "/games": [
+            {
+                "id": 1,
+                "season": 2023,
+                "week": 1,
+                "homeTeam": "A",
+                "awayTeam": "B",
+                "homePoints": 20,
+                "awayPoints": 10,
+                "completed": True,
+            },
+        ],
+    }
+    session = _FakeSession(routes)
+    client = CFBDClient(Settings(api_key="secret", cache_dir=tmp_path), session=session)
+    teams, games = load_seasons([2024, 2023], "regular", client=client)
+    assert [t.school for t in teams] == ["A", "B"]
+    assert len(games) == 2 and games[0].season == games[1].season == 2023
 
 
 def test_consensus_spreads_fallback_to_mean():

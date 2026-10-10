@@ -77,6 +77,42 @@ Component ratings are standardised to z-scores (so points, probabilities and Elo
 commensurable) and blended with user-supplied weights that are normalised to sum to one.
 The default is an equal blend of Colley, Massey and Elo.
 
+### 1.6 Preseason priors (warm starts)
+
+A season is only 12-13 games, and a team's strength is strongly correlated with the
+previous year's, so a cold start throws away real information. Every model therefore
+accepts a **prior** $r^0$ built from the previous season:
+
+$$
+r^0_i = c + (1 - \rho)\,(r^{\text{prev}}_i - c), \qquad \rho = \texttt{season\_regress} = 0.33,
+$$
+
+where $c$ is the model's neutral rating (0.5 for Colley, 1500 for Elo, 0 otherwise). The
+prior enters each model in its natural place:
+
+| Model | Prior mechanism |
+|---|---|
+| Colley | the `prior_strength` pseudo-games are played at $r^0_i$ instead of 0.5: $b_i = \text{prior\_strength}\cdot r^0_i + (w_i - l_i)/2$ |
+| Massey | ridge toward the prior, $\lambda_p \lVert r - r^0 \rVert^2$ with $\lambda_p = 3$ (a prior carries real information and gets more weight than shrinkage toward zero) |
+| Elo | ratings simply start at $r^0$ |
+| Bradley-Terry | penalty $\tfrac{\text{ridge}}{2}\lVert r - r^0\rVert^2$ |
+| Hybrid | one prior per component |
+
+Priors chain across seasons (each season's prior is the regressed fit of a season that was
+itself warm-started), and the previous season's calibrator is carried across the boundary
+so that week-1 spreads are on a sensible scale even for models whose ratings have no
+natural point units. For the synthetic benchmark ($\lambda_p=3$, $\rho=0.33$) the warm start
+lowers log loss on identical weeks for every model and lets evaluation begin in week 1.
+
+### 1.7 Games against FCS opponents
+
+Dropping games against non-FBS opponents discards roughly one game per team, including the
+most informative upsets. By default those opponents are pooled into a single pseudo-team,
+``FCS (pooled)``, which is rated like any other team but never ranked and never counted
+as a conference. Wins and losses against it count toward records, strength of schedule
+and PPoints (a loss to the pool costs the full bottom-tier penalty). Set ``CFB_FCS=drop`` or
+``--fcs drop`` to restore the old behaviour.
+
 ## 2. From ratings to spreads and probabilities
 
 Every model is passed through the same calibration so that outputs are comparable:
@@ -131,14 +167,19 @@ loss penalty of 2 to reward ambitious scheduling.
 
 ## 5. Backtesting
 
-The walk-forward engine evaluates genuinely out-of-sample predictions:
+The walk-forward engine evaluates genuinely out-of-sample predictions. Games may span
+several seasons; seasons are processed in order and every season after the first is
+warm-started from the one before it (section 1.6).
 
-1. For each week $w \ge$ `start_week`, fit the model on all completed games with
-   week $< w$ (optionally preceded by warm-up games from earlier seasons).
-2. Build the calibrator from a cross-validated fit on that training window, then refit it
-   on the held-out predictions already made for weeks $< w$ (recent weeks weighted by
-   $0.85^{\Delta w}$) once at least 30 such pairs exist.
+1. For each week $w \ge$ `start_week`, fit the model on the season's completed games with
+   week $< w$, seeded with the season's prior. (Without a prior the first evaluation waits
+   for `min_train_games`; with one it can start in week 1.)
+2. Build the calibrator from a cross-validated fit on that training window (anchored on
+   the previous season's calibrator when there is one), then refit it on the held-out
+   predictions already made for earlier weeks (recent weeks weighted by $0.85^{\Delta w}$)
+   once at least 30 such pairs exist.
 3. Predict every game in week $w$ and record margin, win probability and outcome.
+4. At the end of the season, regress the final ratings into the next season's prior.
 
 Pooled predictions are scored with
 

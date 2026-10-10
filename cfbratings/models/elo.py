@@ -19,7 +19,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from ..data.schema import Game
-from .base import RatingResult, Ratings
+from .base import Prior, RatingResult, Ratings
 
 
 def elo_expected(r_home: float, r_away: float, hfa_elo: float = 0.0) -> float:
@@ -76,9 +76,12 @@ class EloModel:
         self,
         teams: Sequence[str],
         games: Sequence[Game],
+        prior: Prior | None = None,
         initial: Mapping[str, float] | None = None,
     ) -> RatingResult:
-        ratings: Ratings = {t: float(initial.get(t, self.init)) if initial else self.init for t in teams}
+        """``prior`` (or the legacy alias ``initial``) seeds the ratings instead of ``init``."""
+        seed = prior if prior is not None else initial
+        ratings: Ratings = {t: float(seed.get(t, self.init)) if seed else self.init for t in teams}
         current_season: int | None = None
         for g in sorted((g for g in games if g.has_score), key=lambda g: g.order_key):
             if g.home not in ratings or g.away not in ratings:

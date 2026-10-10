@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
 
-from ..data.schema import Game
+from ..data.schema import Game, is_pool_team
 
 Ratings = dict[str, float]
+Prior = Mapping[str, float]
 
 
 @dataclass
@@ -41,7 +42,8 @@ class RatingResult:
         return self.ratings.get(team, default)
 
     def ranked(self) -> list[tuple[str, float]]:
-        return sorted(self.ratings.items(), key=lambda kv: (-kv[1], kv[0]))
+        """Teams best-first. Pooled pseudo-teams (see ``FCS_POOL``) are rated but never ranked."""
+        return sorted(((t, v) for t, v in self.ratings.items() if not is_pool_team(t)), key=lambda kv: (-kv[1], kv[0]))
 
     def rank_map(self) -> dict[str, int]:
         return {team: i + 1 for i, (team, _) in enumerate(self.ranked())}
@@ -75,11 +77,18 @@ class RatingResult:
 class RatingModel(Protocol):
     name: str
 
-    def fit(self, teams: Sequence[str], games: Sequence[Game]) -> RatingResult: ...
+    def fit(self, teams: Sequence[str], games: Sequence[Game], prior: Prior | None = None) -> RatingResult: ...
 
 
 def index_teams(teams: Sequence[str]) -> dict[str, int]:
     return {t: i for i, t in enumerate(teams)}
+
+
+def prior_vector(teams: Sequence[str], prior: Prior | None, default: float) -> np.ndarray:
+    """Prior ratings aligned with ``teams``; unknown teams get ``default``."""
+    if not prior:
+        return np.full(len(teams), default, dtype=float)
+    return np.array([float(prior.get(t, default)) for t in teams], dtype=float)
 
 
 def usable_games(games: Sequence[Game], team_index: dict[str, int]) -> list[Game]:

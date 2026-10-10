@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.1.0 — 2026-10-10
+
+### Formulas
+- **Preseason priors / warm starts.** Every model accepts a `prior` built from the previous
+  season's regressed ratings (`cfbratings.priors`): Colley plays its pseudo-games at the
+  prior, Massey shrinks toward it with a dedicated `prior_lambda` (default 3.0), Elo starts
+  from it, Bradley-Terry penalises distance from it, Hybrid takes one prior per component.
+  A single `season_regress` setting (default 0.33, env `CFB_SEASON_REGRESS`) replaces the
+  Elo-only knob. The previous season's calibrator is carried across the boundary so
+  week-1 spreads keep a sensible scale.
+- **FCS pooling.** Games against non-FBS opponents are no longer discarded: the opponent
+  becomes one shared pseudo-team, `FCS (pooled)`, that is rated but never ranked
+  (`CFB_FCS=pool|drop`, `--fcs`).
+- Massey recency weighting now measures age on an absolute timeline across seasons.
+
+### Backtesting
+- The walk-forward engine handles multi-season inputs, chaining priors season to season,
+  and reports a `seasons` column plus `BacktestResult.by_season()`.
+- Multi-season CLI: `--years 2022-2024`, `--warmup-years N`; demo mode generates
+  correlated synthetic seasons (`synthetic_seasons`).
+
+### Presentation
+- Dashboard sidebar gains "Warm-start from prior seasons" and "Games vs. FCS opponents";
+  the Backtest tab evaluates across all loaded seasons and shows per-season metrics.
+- CLI output states whether ratings are warm-started and from how many seasons.
+
+### Data
+- `load_seasons` fetches several seasons and merges rosters; `Game` keeps the original
+  school name of a pooled opponent for display.
+
 ## 1.0.0 — 2026-10-09
 
 A ground-up modernisation of the original Copilot-era prototype.

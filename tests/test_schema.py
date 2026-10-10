@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from cfbratings.data.schema import (
+    FCS_POOL,
     Game,
     Record,
     Team,
@@ -10,6 +11,7 @@ from cfbratings.data.schema import (
     games_through_week,
     max_completed_week,
     normalize_games,
+    pool_non_fbs,
 )
 
 
@@ -116,3 +118,28 @@ def test_team_and_record():
     r = Record(10, 2, 1)
     assert str(r) == "10-2-1" and r.games == 13 and abs(r.win_pct - 10.5 / 13) < 1e-12
     assert str(Record(3, 1)) == "3-1"
+
+
+def test_pool_non_fbs_rewrites_opponents_and_keeps_names():
+    games = [
+        Game(id=1, season=2025, week=1, home="A", away="B", home_points=1, away_points=0, completed=True),
+        Game(
+            id=2,
+            season=2025,
+            week=1,
+            home="A",
+            away="Tiny U",
+            home_points=50,
+            away_points=0,
+            completed=True,
+            away_conference="Big Sky",
+        ),
+        Game(id=3, season=2025, week=2, home="Tiny U", away="B", home_points=0, away_points=3, completed=True),
+        Game(id=4, season=2025, week=2, home="Tiny U", away="Smaller U", home_points=0, away_points=3, completed=True),
+    ]
+    pooled = pool_non_fbs(games, ["A", "B"])
+    assert [g.id for g in pooled] == [1, 2, 3]
+    assert pooled[1].away == FCS_POOL and pooled[1].away_name == "Tiny U" and pooled[1].away_conference == "FCS"
+    assert pooled[1].display_name(FCS_POOL) == "Tiny U" and pooled[1].display_name("A") == "A"
+    assert pooled[2].home == FCS_POOL and pooled[2].home_display == "Tiny U"
+    assert pooled[0].home_name is None

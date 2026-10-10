@@ -20,12 +20,14 @@ import streamlit as st
 from cfbratings import __version__, settings
 from cfbratings.analytics import conference_table, records, schedule_table, team_table
 from cfbratings.backtest import compare_methods
-from cfbratings.data import Game, Team, load_season, max_completed_week, synthetic_season
+from cfbratings.data import Game, Team, load_seasons, max_completed_week, synthetic_seasons
 from cfbratings.data.cfbd import CFBDError
 from cfbratings.data.schema import conference_map as _conference_map
+from cfbratings.data.schema import is_pool_team
 from cfbratings.models import MODEL_LABELS, MODEL_NAMES, make_model
 from cfbratings.ppoints import ppoints as _ppoints
 from cfbratings.predict import MarginCalibrator
+from cfbratings.priors import WarmStart, warm_start
 from cfbratings.snapshots import weekly_snapshots
 from cfbratings.viz import (
     calibration_chart,
@@ -45,15 +47,19 @@ METHODOLOGY = ROOT / "docs" / "METHODOLOGY.md"
 
 
 @st.cache_data(show_spinner="Loading season…")
-def load_data(demo: bool, year: int, season_type: str, refresh_token: int, seed: int):
+def load_data(demo: bool, year: int, warmup: int, season_type: str, fcs: str, refresh_token: int, seed: int):
+    years = list(range(year - warmup, year + 1))
+    span = f"{years[0]}-{years[-1]}" if warmup else str(year)
     if demo:
-        s = synthetic_season(season=year, seed=seed)
+        chain = synthetic_seasons(years, seed=seed)
+        games = [g for season in chain for g in season.games]
         return (
-            [_team_dict(t) for t in s.teams],
-            [g.to_dict() for g in s.games],
-            f"Synthetic season {year} (seed {seed})",
+            [_team_dict(t) for t in chain[-1].teams],
+            [g.to_dict() for g in games],
+            f"Synthetic season {span} (seed {seed})",
         )
-    teams, games = load_season(year, season_type, force_refresh=refresh_token > 0)
+    teams, games = load_seasons(years, season_type, force_refresh=refresh_token > 0, fcs=fcs)
+    season_type = f"{span} · {season_type} · FCS {'pooled' if fcs == 'pool' else 'dropped'}"
     return [_team_dict(t) for t in teams], [g.to_dict() for g in games], f"CollegeFootballData · {year} · {season_type}"
 
 
@@ -66,20 +72,29 @@ def _team_dict(t: Team) -> dict:
     }
 
 
+@st.cache_data(show_spinner="Building preseason prior…")
+def warm_start_cached(method: str, params_json: str, data_key: str, _names: list[str], _games: list[Game], season: int):
+    return warm_start(method, _games, _names, season, settings=settings, **json.loads(params_json))
+
+
 @st.cache_data(show_spinner=False)
-def fit_cached(method: str, params_json: str, data_key: str, _names: list[str], _games: list[Game]):
+def fit_cached(method: str, params_json: str, data_key: str, _names: list[str], _games: list[Game], _ws: WarmStart):
     params = json.loads(params_json)
     model = make_model(method, settings, **params)
-    result = model.fit(_names, _games)
-    cal = MarginCalibrator.fit_cv(model, _names, _games, fallback_hfa=settings.home_field_adv)
+    result = model.fit(_names, _games, prior=_ws.prior)
+    cal = MarginCalibrator.fit_cv(
+        model, _names, _games, fallback_hfa=settings.home_field_adv, prior=_ws.prior, fallback=_ws.calibrator
+    )
     return result, cal
 
 
 @st.cache_data(show_spinner="Computing weekly snapshots…")
 def snapshots_cached(
-    method: str, params_json: str, data_key: str, _names: list[str], _games: list[Game], use_cache: bool
+    method: str, params_json: str, data_key: str, _names: list[str], _games: list[Game], use_cache: bool, _ws: WarmStart
 ):
-    return weekly_snapshots(method, _names, _games, settings=settings, use_cache=use_cache, **json.loads(params_json))
+    return weekly_snapshots(
+        method, _names, _games, settings=settings, use_cache=use_cache, prior=_ws.prior, **json.loads(params_json)
+    )
 
 
 @st.cache_data(show_spinner="Running walk-forward backtest…")
@@ -88,7 +103,7 @@ def backtest_cached(methods: tuple[str, ...], start_week: int, params_json: str,
     table, results = compare_methods(
         _names, _games, list(methods), start_week=start_week, params=dict.fromkeys(methods, params)
     )
-    detail = {m: (r.predictions, r.by_week(), r.calibration()) for m, r in results.items()}
+    detail = {m: (r.predictions, r.by_week(), r.calibration(), r.by_season()) for m, r in results.items()}
     return table, detail
 
 
@@ -107,7 +122,25 @@ with st.sidebar:
     if not has_key and not demo:
         st.warning("No `CFBD_API_KEY` found. Add one to `.env` or switch to demo mode.")
     year = int(st.number_input("Season", min_value=2000, max_value=2035, value=int(settings.year), step=1))
+    warmup = int(
+        st.number_input(
+            "Warm-start from prior seasons",
+            min_value=0,
+            max_value=3,
+            value=1,
+            step=1,
+            help="Earlier seasons are loaded; their regressed final ratings seed this season and feed the backtest.",
+        )
+    )
     season_type = st.selectbox("Season type", ["both", "regular", "postseason"], index=0, disabled=demo)
+    fcs = st.radio(
+        "Games vs. FCS opponents",
+        ["pool", "drop"],
+        index=0 if settings.fcs_handling == "pool" else 1,
+        horizontal=True,
+        disabled=demo,
+        help="Pool: every FCS opponent becomes one shared pseudo-team so the result counts. Drop: ignore those games.",
+    )
     seed = int(st.number_input("Demo seed", min_value=0, max_value=9999, value=7, step=1)) if demo else 7
     method = st.selectbox(
         "Rating method", MODEL_NAMES, index=MODEL_NAMES.index("hybrid"), format_func=lambda m: MODEL_LABELS[m]
@@ -121,7 +154,7 @@ with st.sidebar:
             "Massey recency half-life (weeks, 0 = off)", 0.0, 10.0, float(settings.massey_half_life_weeks), 0.5
         )
         elo_k = st.slider("Elo K-factor", 5.0, 80.0, float(settings.elo_k), 1.0)
-        elo_regress = st.slider("Elo season regression", 0.0, 1.0, float(settings.elo_season_regress), 0.05)
+        elo_regress = st.slider("Season regression (all models)", 0.0, 1.0, float(settings.season_regress), 0.05)
         bt_ridge = st.slider("Bradley-Terry ridge", 0.1, 5.0, float(settings.bt_ridge), 0.1)
         st.markdown("**Hybrid weights**")
         w_colley = st.slider("Colley", 0.0, 1.0, float(settings.hybrid_weight_map.get("colley", 0.0)), 0.05)
@@ -153,7 +186,9 @@ params_json = json.dumps(params, sort_keys=True)
 # --- data ------------------------------------------------------------------------------
 
 try:
-    teams_raw, games_raw, source_label = load_data(demo, year, season_type, st.session_state.refresh_token, seed)
+    teams_raw, games_raw, source_label = load_data(
+        demo, year, warmup, season_type, fcs, st.session_state.refresh_token, seed
+    )
 except CFBDError as exc:
     st.error(str(exc))
     st.stop()
@@ -162,21 +197,31 @@ except Exception as exc:  # network / HTTP problems
     st.stop()
 
 teams = [Team(**t) for t in teams_raw]
-games = [Game.from_dict(g) for g in games_raw]
+all_games = [Game.from_dict(g) for g in games_raw]
 names = [t.school for t in teams]
+real_names = [n for n in names if not is_pool_team(n)]
 conf_map = _conference_map(teams)
+season = max((g.season for g in all_games), default=year)
+games = [g for g in all_games if g.season == season]
 last_week = max_completed_week(games)
 n_played = sum(1 for g in games if g.has_score)
-data_key = f"{demo}-{year}-{season_type}-{seed}-{len(games)}-{n_played}-{last_week}"
+n_prior_seasons = len({g.season for g in all_games if g.has_score}) - 1
+data_key = f"{demo}-{year}-{warmup}-{season_type}-{fcs}-{seed}-{len(all_games)}-{n_played}-{last_week}"
 
 st.title("College Football Ratings")
-st.caption(f"{source_label} · {MODEL_LABELS[method]} · {n_played} games through week {last_week}")
+warm_note = (
+    f" · warm-started from {n_prior_seasons} prior season{'s' if n_prior_seasons > 1 else ''}"
+    if n_prior_seasons > 0
+    else ""
+)
+st.caption(f"{source_label} · {MODEL_LABELS[method]} · {n_played} games through week {last_week}{warm_note}")
 
-if n_played == 0:
-    st.info("No completed games yet for this season. Pick another season or switch to demo mode.")
+if n_played == 0 and n_prior_seasons <= 0:
+    st.info("No completed games yet for this season. Pick another season, add prior seasons, or switch to demo mode.")
     st.stop()
 
-result, cal = fit_cached(method, params_json, data_key, names, games)
+ws = warm_start_cached(method, params_json, data_key, names, all_games, season)
+result, cal = fit_cached(method, params_json, data_key, names, games, ws)
 recs = records(names, games)
 top_team, top_rating = result.ranked()[0]
 
@@ -205,7 +250,7 @@ with tab_rank:
 
     pp = None
     if show_pp or sort_by == "ppoints":
-        snaps = snapshots_cached(method, params_json, data_key, names, games, use_cache=not demo)
+        snaps = snapshots_cached(method, params_json, data_key, names, games, not demo, ws)
         pp = _ppoints(names, games, result.ratings, conf_map, snaps)
     table = team_table(names, games, result, cal, conf_map, ppoints=pp)
     if conf_filter != "All":
@@ -247,7 +292,7 @@ with tab_rank:
 
 with tab_team:
     full = team_table(names, games, result, cal, conf_map)
-    team = st.selectbox("Team", names, index=names.index(top_team))
+    team = st.selectbox("Team", real_names, index=real_names.index(top_team))
     row = full[full["team"] == team].iloc[0]
     t1, t2, t3, t4, t5 = st.columns(5)
     t1.metric("Rank", f"#{int(row['rank'])}")
@@ -256,8 +301,8 @@ with tab_team:
     t4.metric("SOS rank", f"#{int(row['sos_rank'])}")
     t5.metric("Momentum", f"{row['momentum']:+.1f} pts")
 
-    compare = st.multiselect("Compare with", [n for n in names if n != team], max_selections=7)
-    snaps = snapshots_cached(method, params_json, data_key, names, games, use_cache=not demo)
+    compare = st.multiselect("Compare with", [n for n in real_names if n != team], max_selections=7)
+    snaps = snapshots_cached(method, params_json, data_key, names, games, not demo, ws)
     metric_choice = st.radio("Trajectory", ["rank", "rating"], horizontal=True)
     st.plotly_chart(
         trajectory_chart(snaps, [team, *compare], metric=metric_choice, title="Week-by-week"), width="stretch"
@@ -287,6 +332,7 @@ with tab_team:
 
 with tab_conf:
     conf_df = conference_table(result.ratings, conf_map, recs)
+    conf_df = conf_df[conf_df["conference"] != "FCS"]
     cl, cr = st.columns([2, 3])
     with cl:
         st.dataframe(
@@ -317,7 +363,8 @@ with tab_match:
     neutral = h3.toggle("Neutral site")
     rows = []
     for m in MODEL_NAMES:
-        res_m, cal_m = fit_cached(m, params_json, data_key, names, games)
+        ws_m = warm_start_cached(m, params_json, data_key, names, all_games, season)
+        res_m, cal_m = fit_cached(m, params_json, data_key, names, games, ws_m)
         p = cal_m.predict_game(res_m, home, away, neutral)
         rows.append({"method": MODEL_LABELS[m], "line": p.spread, "home_margin": p.margin, "p_home": p.p_home})
     df_m = pd.DataFrame(rows)
@@ -346,12 +393,18 @@ with tab_bt:
     st.markdown(
         "Walk-forward evaluation: for each week the model is fitted on every earlier game and predicts that week's "
         "games out-of-sample. Lower Brier / log loss / MAE is better; the **home_prior** baseline always picks the home team."
+        + (
+            " Every season after the first is warm-started from the one before it, so evaluation can start in week 1."
+            if n_prior_seasons > 0
+            else ""
+        )
     )
     b1, b2 = st.columns([3, 1])
     chosen = b1.multiselect("Methods", MODEL_NAMES, default=list(MODEL_NAMES), format_func=lambda m: MODEL_LABELS[m])
-    start_week = int(b2.slider("Start week", 2, max(2, last_week), min(4, max(2, last_week))))
+    max_week = max(2, max_completed_week(all_games))
+    start_week = int(b2.slider("Start week", 1, max_week, 1 if n_prior_seasons > 0 else min(4, max_week)))
     if chosen:
-        table_bt, detail = backtest_cached(tuple(chosen), start_week, params_json, data_key, names, games)
+        table_bt, detail = backtest_cached(tuple(chosen), start_week, params_json, data_key, names, all_games)
         table_bt = table_bt.assign(method=[MODEL_LABELS.get(m, m) for m in table_bt["method"]])
         st.dataframe(
             table_bt,
@@ -365,6 +418,7 @@ with tab_bt:
                 "log_loss": st.column_config.NumberColumn("Log loss", format="%.4f"),
                 "mae": st.column_config.NumberColumn("MAE (pts)", format="%.2f"),
                 "rmse": st.column_config.NumberColumn("RMSE (pts)", format="%.2f"),
+                "seasons": "Seasons",
                 "weeks": "Weeks",
             },
         )
@@ -382,6 +436,11 @@ with tab_bt:
                 calibration_chart({MODEL_LABELS[m]: d[2] for m, d in detail.items()}, title="Reliability"),
                 width="stretch",
             )
+        if n_prior_seasons > 0:
+            with st.expander("By season"):
+                for m, d in detail.items():
+                    st.markdown(f"**{MODEL_LABELS[m]}**")
+                    st.dataframe(d[3], hide_index=True, width="stretch")
         with st.expander("Out-of-sample predictions"):
             all_preds = pd.concat([d[0].assign(method=m) for m, d in detail.items()], ignore_index=True)
             st.dataframe(all_preds, hide_index=True, width="stretch")

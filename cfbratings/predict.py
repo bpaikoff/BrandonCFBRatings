@@ -26,6 +26,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -138,10 +139,17 @@ class MarginCalibrator:
         *,
         fallback_hfa: float = 2.5,
         max_margin: float | None = 50.0,
+        fallback: MarginCalibrator | None = None,
     ) -> MarginCalibrator:
-        """In-sample fit on the games the model was trained on."""
+        """In-sample fit on the games the model was trained on.
+
+        ``fallback`` (e.g. last season's calibrator) supplies the shrinkage prior and is
+        returned as-is when there are too few games to fit anything.
+        """
         usable = [g for g in games if g.has_score and g.home in result.ratings and g.away in result.ratings]
-        prior_slope, prior_intercept = cls.prior_for(result, fallback_hfa)
+        prior_slope, prior_intercept, prior_sigma = cls._shrinkage_prior(result, fallback_hfa, fallback)
+        if len(usable) < MIN_GAMES_FOR_FIT and fallback is not None:
+            return fallback
         teams_seen = {g.home for g in usable} | {g.away for g in usable}
         return cls.from_arrays(
             [result.diff(g.home, g.away) for g in usable],
@@ -149,10 +157,20 @@ class MarginCalibrator:
             [float(g.margin) for g in usable],
             prior_slope=prior_slope,
             prior_intercept=prior_intercept,
+            prior_sigma=prior_sigma,
             dof=len(teams_seen),
             max_margin=max_margin,
             source="in_sample",
         )
+
+    @classmethod
+    def _shrinkage_prior(
+        cls, result: RatingResult, fallback_hfa: float, fallback: MarginCalibrator | None
+    ) -> tuple[float, float, float]:
+        if fallback is not None:
+            return fallback.slope, fallback.intercept, fallback.sigma
+        slope, intercept = cls.prior_for(result, fallback_hfa)
+        return slope, intercept, DEFAULT_SIGMA
 
     @classmethod
     def fit_cv(
@@ -165,19 +183,23 @@ class MarginCalibrator:
         seed: int = 0,
         fallback_hfa: float = 2.5,
         max_margin: float | None = 50.0,
+        prior: Any = None,
+        fallback: MarginCalibrator | None = None,
     ) -> MarginCalibrator:
         """Cross-validated fit: every game is predicted by a model that did not see it.
 
         This is the recommended calibrator for live rankings. It removes the optimism of
         in-sample residuals (and of an in-sample slope of 1.0 for Massey early in the
         season) at the cost of ``folds`` extra model fits, which take milliseconds.
+        ``prior`` warm-starts every fold's fit; ``fallback`` (typically last season's
+        calibrator) anchors the coefficients while the season is young.
         """
         team_set = set(teams)
         usable = [g for g in games if g.has_score and g.home in team_set and g.away in team_set]
-        full = model.fit(teams, usable)
+        full = model.fit(teams, usable, prior=prior)
         if len(usable) < 2 * MIN_GAMES_FOR_FIT or folds < 2:
-            return cls.fit(full, usable, fallback_hfa=fallback_hfa, max_margin=max_margin)
-        prior_slope, prior_intercept = cls.prior_for(full, fallback_hfa)
+            return cls.fit(full, usable, fallback_hfa=fallback_hfa, max_margin=max_margin, fallback=fallback)
+        prior_slope, prior_intercept, prior_sigma = cls._shrinkage_prior(full, fallback_hfa, fallback)
         rng = np.random.default_rng(seed)
         fold_id = rng.permutation(len(usable)) % folds
         diffs: list[float] = []
@@ -186,7 +208,7 @@ class MarginCalibrator:
         for f in range(folds):
             train = [g for g, fid in zip(usable, fold_id, strict=True) if fid != f]
             held = [g for g, fid in zip(usable, fold_id, strict=True) if fid == f]
-            res = model.fit(teams, train)
+            res = model.fit(teams, train, prior=prior)
             for g in held:
                 diffs.append(res.diff(g.home, g.away))
                 home.append(0.0 if g.neutral_site else 1.0)
@@ -197,6 +219,7 @@ class MarginCalibrator:
             margins,
             prior_slope=prior_slope,
             prior_intercept=prior_intercept,
+            prior_sigma=prior_sigma,
             max_margin=max_margin,
             source="cross_val",
         )

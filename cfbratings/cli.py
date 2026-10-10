@@ -4,7 +4,9 @@ cfbratings rank --year 2025 --method hybrid --top 25
 cfbratings backtest --methods massey,elo,hybrid --start-week 4
 cfbratings tune --method elo --grid "k=15,25,40;hfa=2,2.5,3"
 cfbratings predict "Ohio State" "Michigan" --neutral
-cfbratings --demo rank          # synthetic season, no API key needed
+cfbratings --year 2025 --warmup-years 2 rank      # warm-started with 2023-24 priors
+cfbratings --years 2022-2025 backtest             # multi-season walk-forward
+cfbratings --demo rank                            # synthetic season, no API key needed
 """
 
 from __future__ import annotations
@@ -23,11 +25,13 @@ from .analytics import conference_table, schedule_table, team_table
 from .backtest import compare_methods, grid_search
 from .config import Settings
 from .config import settings as default_settings
-from .data import CFBDClient, Game, JsonCache, Team, load_season, synthetic_season
+from .data import CFBDClient, Game, JsonCache, Team, load_seasons, synthetic_seasons
 from .data.schema import conference_map as _conference_map
+from .data.schema import is_pool_team
 from .models import MODEL_LABELS, MODEL_NAMES, make_model
 from .ppoints import ppoints as _ppoints
 from .predict import MarginCalibrator
+from .priors import WarmStart, warm_start
 from .snapshots import trajectory, weekly_snapshots
 
 log = logging.getLogger("cfbratings")
@@ -83,17 +87,65 @@ def _settings(args: argparse.Namespace) -> Settings:
     overrides: dict[str, Any] = {}
     if args.cache_dir:
         overrides["cache_dir"] = Path(args.cache_dir)
+    if getattr(args, "fcs", None):
+        overrides["fcs_handling"] = args.fcs
     return s.with_overrides(**overrides) if overrides else s
 
 
+def parse_years(spec: str) -> list[int]:
+    """``"2022-2024"`` or ``"2021,2023"`` → sorted list of seasons."""
+    years: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        lo, sep, hi = part.partition("-")
+        if sep:
+            a, b = int(lo), int(hi)
+            years.update(range(min(a, b), max(a, b) + 1))
+        else:
+            years.add(int(part))
+    if not years:
+        raise SystemExit("--years needs at least one season, e.g. 2022-2024")
+    return sorted(years)
+
+
+def requested_years(args: argparse.Namespace) -> list[int]:
+    if getattr(args, "years", None):
+        return parse_years(args.years)
+    warmup = max(int(getattr(args, "warmup_years", 0) or 0), 0)
+    return list(range(args.year - warmup, args.year + 1))
+
+
 def load_data(args: argparse.Namespace, s: Settings) -> tuple[list[Team], list[Game], str]:
-    """Return ``(teams, games, source_label)`` from CFBD or the synthetic generator."""
+    """Return ``(teams, games, source_label)`` from CFBD or the synthetic generator.
+
+    ``games`` may cover several seasons (``--years`` or ``--warmup-years``); commands that
+    describe one season use the latest and warm-start it from the earlier ones.
+    """
+    years = requested_years(args)
+    span = f"{years[0]}-{years[-1]}" if len(years) > 1 else str(years[0])
     if args.demo:
-        season = synthetic_season(season=args.year, seed=args.seed)
-        return season.teams, season.games, f"synthetic season {args.year} (seed {args.seed})"
+        chain = synthetic_seasons(years, seed=args.seed)
+        games = [g for season in chain for g in season.games]
+        return chain[-1].teams, games, f"synthetic season{'s' if len(years) > 1 else ''} {span} (seed {args.seed})"
     client = CFBDClient(s)
-    teams, games = load_season(args.year, args.season_type, force_refresh=args.refresh, client=client)
-    return teams, games, f"CFBD {args.year} ({args.season_type})"
+    teams, games = load_seasons(years, args.season_type, force_refresh=args.refresh, client=client)
+    fcs = "FCS pooled" if s.fcs_handling == "pool" else "FCS dropped"
+    return teams, games, f"CFBD {span} ({args.season_type}, {fcs})"
+
+
+def season_view(
+    s: Settings, teams: list[Team], games: list[Game], method: str, params: dict[str, Any]
+) -> tuple[int, list[Game], WarmStart, str]:
+    """The latest season's games plus what it inherits from earlier seasons."""
+    names = [t.school for t in teams]
+    season = max((g.season for g in games), default=0)
+    ws = warm_start(method, games, names, season, settings=s, **params)
+    note = (
+        f"warm-started from {len(ws.seasons)} prior season{'s' if len(ws.seasons) > 1 else ''}" if ws else "cold start"
+    )
+    return season, [g for g in games if g.season == season], ws, note
 
 
 def _print_df(df: pd.DataFrame, floatfmt: str = "{:.3f}") -> None:
@@ -124,13 +176,18 @@ def cmd_rank(args: argparse.Namespace) -> int:
     names = [t.school for t in teams]
     conf_map = _conference_map(teams)
     params = parse_params(args.param)
+    season, games, ws, note = season_view(s, teams, games, args.method, params)
     model = make_model(args.method, s, **params)
-    result = model.fit(names, games)
-    cal = MarginCalibrator.fit_cv(model, names, games, fallback_hfa=s.home_field_adv)
+    result = model.fit(names, games, prior=ws.prior)
+    cal = MarginCalibrator.fit_cv(
+        model, names, games, fallback_hfa=s.home_field_adv, prior=ws.prior, fallback=ws.calibrator
+    )
 
     pp = None
     if not args.no_ppoints:
-        snaps = weekly_snapshots(args.method, names, games, settings=s, use_cache=not args.demo, **params)
+        snaps = weekly_snapshots(
+            args.method, names, games, settings=s, use_cache=not args.demo, prior=ws.prior, **params
+        )
         pp = _ppoints(names, games, result.ratings, conf_map, snaps)
 
     table = team_table(names, games, result, cal, conf_map, ppoints=pp)
@@ -141,7 +198,7 @@ def cmd_rank(args: argparse.Namespace) -> int:
     shown = table.head(args.top)
 
     label = MODEL_LABELS.get(args.method, args.method)
-    print(f"\n{label} ratings — {source}")
+    print(f"\n{label} ratings — {season} — {source} — {note}")
     print(
         f"calibration: HFA {cal.intercept:+.2f} pts, slope {cal.slope:.3f}, "
         f"sigma {cal.sigma:.1f} pts ({cal.source}, n={cal.n_games})\n"
@@ -159,11 +216,14 @@ def cmd_conferences(args: argparse.Namespace) -> int:
     teams, games, source = load_data(args, s)
     names = [t.school for t in teams]
     conf_map = _conference_map(teams)
-    result = make_model(args.method, s, **parse_params(args.param)).fit(names, games)
+    params = parse_params(args.param)
+    season, games, ws, note = season_view(s, teams, games, args.method, params)
+    result = make_model(args.method, s, **params).fit(names, games, prior=ws.prior)
     from .analytics import records  # local import keeps the module namespace tidy
 
     df = conference_table(result.ratings, conf_map, records(names, games))
-    print(f"\nConference strength — {MODEL_LABELS.get(args.method, args.method)} — {source}\n")
+    df = df[df["conference"] != "FCS"]
+    print(f"\nConference strength — {MODEL_LABELS.get(args.method, args.method)} — {season} — {source} — {note}\n")
     _print_df(df)
     _export(df, args.csv, args.json)
     return 0
@@ -173,18 +233,21 @@ def cmd_team(args: argparse.Namespace) -> int:
     s = _settings(args)
     teams, games, source = load_data(args, s)
     names = [t.school for t in teams]
-    if args.team not in names:
-        close = [n for n in names if args.team.lower() in n.lower()]
+    if args.team not in names or is_pool_team(args.team):
+        close = [n for n in names if args.team.lower() in n.lower() and not is_pool_team(n)]
         hint = f" Did you mean: {', '.join(close[:5])}?" if close else ""
         raise SystemExit(f"unknown team {args.team!r}.{hint}")
     params = parse_params(args.param)
+    season, games, ws, note = season_view(s, teams, games, args.method, params)
     model = make_model(args.method, s, **params)
-    result = model.fit(names, games)
-    cal = MarginCalibrator.fit_cv(model, names, games, fallback_hfa=s.home_field_adv)
+    result = model.fit(names, games, prior=ws.prior)
+    cal = MarginCalibrator.fit_cv(
+        model, names, games, fallback_hfa=s.home_field_adv, prior=ws.prior, fallback=ws.calibrator
+    )
     rank = result.rank_map()[args.team]
-    print(f"\n{args.team} — #{rank} ({MODEL_LABELS.get(args.method, args.method)}, {source})\n")
+    print(f"\n{args.team} — #{rank} ({MODEL_LABELS.get(args.method, args.method)}, {season}, {source}, {note})\n")
     _print_df(schedule_table(args.team, games, result, cal))
-    snaps = weekly_snapshots(args.method, names, games, settings=s, use_cache=not args.demo, **params)
+    snaps = weekly_snapshots(args.method, names, games, settings=s, use_cache=not args.demo, prior=ws.prior, **params)
     traj = trajectory(snaps, args.team)
     if traj:
         print("\nWeekly rank: " + " → ".join(f"W{w}:#{r}" for w, r, _ in traj))
@@ -196,14 +259,18 @@ def cmd_predict(args: argparse.Namespace) -> int:
     teams, games, source = load_data(args, s)
     names = [t.school for t in teams]
     for team in (args.home, args.away):
-        if team not in names:
+        if team not in names or is_pool_team(team):
             raise SystemExit(f"unknown team {team!r}")
     methods = [m.strip() for m in args.methods.split(",")] if args.methods else list(MODEL_NAMES)
     rows = []
+    note = "cold start"
     for m in methods:
+        _, season_games, ws, note = season_view(s, teams, games, m, {})
         model = make_model(m, s)
-        result = model.fit(names, games)
-        cal = MarginCalibrator.fit_cv(model, names, games, fallback_hfa=s.home_field_adv)
+        result = model.fit(names, season_games, prior=ws.prior)
+        cal = MarginCalibrator.fit_cv(
+            model, names, season_games, fallback_hfa=s.home_field_adv, prior=ws.prior, fallback=ws.calibrator
+        )
         pred = cal.predict_game(result, args.home, args.away, args.neutral)
         rows.append(
             {
@@ -215,7 +282,7 @@ def cmd_predict(args: argparse.Namespace) -> int:
             }
         )
     site = "neutral site" if args.neutral else f"at {args.home}"
-    print(f"\n{args.away} @ {args.home} ({site}) — {source}\n")
+    print(f"\n{args.away} @ {args.home} ({site}) — {source} — {note}\n")
     _print_df(pd.DataFrame(rows))
     return 0
 
@@ -227,11 +294,20 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     methods = [m.strip() for m in args.methods.split(",")] if args.methods else list(MODEL_NAMES)
     lines = None
     if args.lines and not args.demo:
-        lines = CFBDClient(s).lines(args.year, args.season_type, force_refresh=args.refresh)
+        client = CFBDClient(s)
+        lines = {}
+        for year in requested_years(args):
+            lines.update(client.lines(year, args.season_type, force_refresh=args.refresh))
     params = {m: parse_params(args.param) for m in methods}
     table, results = compare_methods(names, games, methods, start_week=args.start_week, params=params, lines=lines)
-    print(f"\nWalk-forward backtest — {source} — evaluation from week {args.start_week}\n")
+    seasons = sorted({g.season for g in games})
+    warm = " (later seasons warm-started from the previous one)" if len(seasons) > 1 else ""
+    print(f"\nWalk-forward backtest — {source} — evaluation from week {args.start_week}{warm}\n")
     _print_df(table, "{:.4f}")
+    if len(seasons) > 1:
+        for m, res in results.items():
+            print(f"\n{MODEL_LABELS.get(m, m)} by season")
+            _print_df(res.by_season(), "{:.4f}")
     if args.by_week:
         for m, res in results.items():
             print(f"\n{MODEL_LABELS.get(m, m)} by week")
@@ -275,7 +351,9 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
     s = _settings(args)
     teams, games, _ = load_data(args, s)
     names = [t.school for t in teams]
-    snaps = weekly_snapshots(args.method, names, games, settings=s, use_cache=not args.demo, **parse_params(args.param))
+    params = parse_params(args.param)
+    _, games, ws, _ = season_view(s, teams, games, args.method, params)
+    snaps = weekly_snapshots(args.method, names, games, settings=s, use_cache=not args.demo, prior=ws.prior, **params)
     print(
         f"computed {len(snaps)} weekly snapshots for {args.method} (weeks {min(snaps, default=0)}-{max(snaps, default=0)})"
     )
@@ -310,6 +388,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--year", type=int, default=default_settings.year, help="season (default: current)")
     parser.add_argument(
         "--season-type", default=default_settings.season_type, choices=["regular", "postseason", "both"]
+    )
+    parser.add_argument("--years", help="several seasons, e.g. 2022-2024 or 2021,2023 (overrides --year)")
+    parser.add_argument(
+        "--warmup-years", type=int, default=0, metavar="N", help="also load N earlier seasons to warm-start ratings"
+    )
+    parser.add_argument(
+        "--fcs",
+        choices=["pool", "drop"],
+        help="games vs non-FBS opponents: pool into one pseudo-team (default) or drop",
     )
     parser.add_argument(
         "--demo", action="store_true", help="use a synthetic season instead of CFBD (no API key needed)"

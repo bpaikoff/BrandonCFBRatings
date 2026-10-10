@@ -24,7 +24,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from .analytics import conference_strength
-from .data.schema import Game
+from .data.schema import Game, is_pool_team
 from .models.base import Ratings
 
 
@@ -48,7 +48,7 @@ class PPointsConfig:
 
 
 def _rank_map(ratings: Mapping[str, float]) -> dict[str, int]:
-    ordered = sorted(ratings.items(), key=lambda kv: (-kv[1], kv[0]))
+    ordered = sorted(((t, v) for t, v in ratings.items() if not is_pool_team(t)), key=lambda kv: (-kv[1], kv[0]))
     return {t: i + 1 for i, (t, _) in enumerate(ordered)}
 
 

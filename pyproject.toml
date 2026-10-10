@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cfbratings"
-version = "1.0.0"
+version = "1.1.0"
 description = "College football rating systems (Colley, Massey, Elo, Bradley-Terry, Hybrid) with analytics, walk-forward backtesting and a Streamlit dashboard"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -12,6 +12,11 @@ earlier weeks have accumulated the calibrator is refitted on those out-of-sample
 (recent weeks weighted more heavily). A one-parameter-per-team model would otherwise look
 far more certain than it is early in the season.
 
+``games`` may span several seasons. Seasons are evaluated in order and each one is
+warm-started with a regressed prior built from the seasons before it (see
+:mod:`cfbratings.priors`), so September predictions benefit from last year. A prior for
+the first season can be supplied explicitly (``prior=``).
+
 Two reference points are always reported alongside the model:
 
 * ``home_prior`` -- always pick the home team with the training-set home win rate and
@@ -33,6 +38,7 @@ from ..config import settings as default_settings
 from ..data.schema import Game, max_completed_week
 from ..models import MODEL_NAMES, make_model
 from ..predict import MarginCalibrator, normal_cdf
+from ..priors import WarmStart, preseason_prior
 from .metrics import calibration_table, summarize_predictions
 
 PREDICTION_COLUMNS = [
@@ -61,9 +67,10 @@ class BacktestConfig:
     params: dict[str, Any] = field(default_factory=dict)
     start_week: int = 4
     end_week: int | None = None
-    min_train_games: int = 40
+    min_train_games: int = 40  # waived for seasons that start from a prior
     include_postseason: bool = True
     calibration_decay: float = 0.85  # weekly weight decay for out-of-sample calibration pairs
+    season_regress: float | None = None  # carry-over regression; None → settings.season_regress
 
     def label(self) -> str:
         if not self.params:
@@ -86,12 +93,21 @@ class BacktestResult:
             )
             out.update(summarize_predictions(prior, prefix="baseline_"))
             out["weeks"] = f"{int(df['week'].min())}-{int(df['week'].max())}"
+            seasons = sorted(df["season"].unique())
+            out["seasons"] = f"{seasons[0]}-{seasons[-1]}" if len(seasons) > 1 else str(seasons[0])
         return out
 
     def by_week(self) -> pd.DataFrame:
+        """Metrics per week, pooled across seasons when more than one was evaluated."""
         rows = []
         for week, sub in self.predictions.groupby("week", sort=True):
             rows.append({"week": int(week), **summarize_predictions(sub)})
+        return pd.DataFrame(rows)
+
+    def by_season(self) -> pd.DataFrame:
+        rows = []
+        for season, sub in self.predictions.groupby("season", sort=True):
+            rows.append({"season": int(season), **summarize_predictions(sub)})
         return pd.DataFrame(rows)
 
     def calibration(self, bins: int = 10) -> pd.DataFrame:
@@ -128,27 +144,22 @@ def rolling_calibrator(
     )
 
 
-def _warm_start(method: str, model, teams: Sequence[str], warmup: Sequence[Game], train: Sequence[Game]):
-    """Fit with warm-up games prepended; Elo regresses between seasons automatically."""
-    if warmup:
-        return model.fit(teams, [*warmup, *train])
-    return model.fit(teams, train)
-
-
 def run_backtest(
     teams: Sequence[str],
     games: Sequence[Game],
     config: BacktestConfig | None = None,
     *,
     settings: Settings | None = None,
-    warmup_games: Sequence[Game] | None = None,
+    prior: Any = None,
     lines: Mapping[int, float] | None = None,
 ) -> BacktestResult:
+    """``prior`` seeds the first season: a rating prior or a :class:`WarmStart` bundle."""
     cfg = config or BacktestConfig()
     s = settings or default_settings
     if cfg.method not in MODEL_NAMES:
         raise ValueError(f"unknown method {cfg.method!r}")
     model = make_model(cfg.method, s, **cfg.params)
+    regress = s.season_regress if cfg.season_regress is None else cfg.season_regress
     team_set = set(teams)
     played = sorted(
         (g for g in games if g.has_score and g.home in team_set and g.away in team_set),
@@ -156,54 +167,69 @@ def run_backtest(
     )
     if not cfg.include_postseason:
         played = [g for g in played if g.season_type != "postseason"]
-    warmup = list(warmup_games or [])
-    last_week = max_completed_week(played)
-    end_week = min(cfg.end_week, last_week) if cfg.end_week else last_week
+    seasons = sorted({g.season for g in played})
+    first_season = seasons[0] if seasons else 0
 
     rows: list[dict[str, Any]] = []
-    oos: list[tuple[int, float, float, float]] = []  # (week, diff, home_ind, margin) held-out pairs
-    for week in range(cfg.start_week, end_week + 1):
-        test = [g for g in played if g.week == week]
-        if not test:
-            continue
-        train = [g for g in played if g.week < week]
-        if len(train) + len(warmup) < cfg.min_train_games:
-            continue
-        result = _warm_start(cfg.method, model, teams, warmup, train)
-        cv_cal = MarginCalibrator.fit_cv(model, teams, [*warmup, *train], fallback_hfa=s.home_field_adv)
-        cal = rolling_calibrator(cv_cal, oos, week, decay=cfg.calibration_decay)
-
-        train_margins = np.array([g.margin for g in train if not g.neutral_site], dtype=float)
-        prior_margin = float(train_margins.mean()) if train_margins.size else s.home_field_adv
-        prior_sd = float(train_margins.std()) if train_margins.size > 1 else 16.0
-        prior_p = normal_cdf(prior_margin / max(prior_sd, 7.0))
-
-        for g in test:
-            pred = cal.predict_game(result, g.home, g.away, g.neutral_site)
-            oos.append((week, result.diff(g.home, g.away), 0.0 if g.neutral_site else 1.0, float(g.margin)))
-            vegas = None
-            if lines and g.id in lines:
-                vegas = -float(lines[g.id])
-            rows.append(
-                {
-                    "season": g.season,
-                    "week": g.week,
-                    "game_id": g.id,
-                    "home": g.home,
-                    "away": g.away,
-                    "neutral": g.neutral_site,
-                    "rating_home": result.get(g.home),
-                    "rating_away": result.get(g.away),
-                    "pred_margin": pred.margin,
-                    "p_home": pred.p_home,
-                    "actual_margin": g.margin,
-                    "home_win": g.home_result,
-                    "correct": (pred.p_home >= 0.5) == (g.margin > 0) if g.margin != 0 else np.nan,
-                    "prior_margin": 0.0 if g.neutral_site else prior_margin,
-                    "prior_p_home": 0.5 if g.neutral_site else prior_p,
-                    "vegas_margin": vegas,
-                }
+    oos: list[tuple[int, float, float, float]] = []  # (absolute week, diff, home_ind, margin)
+    current_prior: Any = prior.prior if isinstance(prior, WarmStart) else (prior or None)
+    carried: MarginCalibrator | None = prior.calibrator if isinstance(prior, WarmStart) else None
+    for season in seasons:
+        season_games = [g for g in played if g.season == season]
+        last_week = max_completed_week(season_games)
+        end_week = min(cfg.end_week, last_week) if cfg.end_week else last_week
+        offset = (season - first_season) * 52
+        for week in range(cfg.start_week, end_week + 1):
+            test = [g for g in season_games if g.week == week]
+            if not test:
+                continue
+            train = [g for g in season_games if g.week < week]
+            if len(train) < cfg.min_train_games and not current_prior:
+                continue
+            result = model.fit(teams, train, prior=current_prior)
+            cv_cal = MarginCalibrator.fit_cv(
+                model, teams, train, fallback_hfa=s.home_field_adv, prior=current_prior, fallback=carried
             )
+            cal = rolling_calibrator(cv_cal, oos, offset + week, decay=cfg.calibration_decay)
+
+            train_margins = np.array([g.margin for g in train if not g.neutral_site], dtype=float)
+            prior_margin = float(train_margins.mean()) if train_margins.size else s.home_field_adv
+            prior_sd = float(train_margins.std()) if train_margins.size > 1 else 16.0
+            prior_p = normal_cdf(prior_margin / max(prior_sd, 7.0))
+
+            for g in test:
+                pred = cal.predict_game(result, g.home, g.away, g.neutral_site)
+                oos.append(
+                    (offset + week, result.diff(g.home, g.away), 0.0 if g.neutral_site else 1.0, float(g.margin))
+                )
+                vegas = None
+                if lines and g.id in lines:
+                    vegas = -float(lines[g.id])
+                rows.append(
+                    {
+                        "season": g.season,
+                        "week": g.week,
+                        "game_id": g.id,
+                        "home": g.home,
+                        "away": g.away,
+                        "neutral": g.neutral_site,
+                        "rating_home": result.get(g.home),
+                        "rating_away": result.get(g.away),
+                        "pred_margin": pred.margin,
+                        "p_home": pred.p_home,
+                        "actual_margin": g.margin,
+                        "home_win": g.home_result,
+                        "correct": (pred.p_home >= 0.5) == (g.margin > 0) if g.margin != 0 else np.nan,
+                        "prior_margin": 0.0 if g.neutral_site else prior_margin,
+                        "prior_p_home": 0.5 if g.neutral_site else prior_p,
+                        "vegas_margin": vegas,
+                    }
+                )
+        # Carry this season forward into the next one: regressed ratings and the calibrator.
+        carried = MarginCalibrator.fit_cv(
+            model, teams, season_games, fallback_hfa=s.home_field_adv, prior=current_prior, fallback=carried
+        )
+        current_prior = preseason_prior(model, teams, season_games, regress=regress, previous_prior=current_prior)
     df = pd.DataFrame(rows, columns=PREDICTION_COLUMNS)
     return BacktestResult(cfg, df)
 
@@ -216,15 +242,18 @@ def compare_methods(
     start_week: int = 4,
     params: Mapping[str, Mapping[str, Any]] | None = None,
     settings: Settings | None = None,
-    warmup_games: Sequence[Game] | None = None,
+    priors: Mapping[str, Any] | None = None,
     lines: Mapping[int, float] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, BacktestResult]]:
-    """Backtest several methods on the same games; returns (summary table, results)."""
+    """Backtest several methods on the same games; returns (summary table, results).
+
+    ``priors`` optionally maps method → prior for the first season in ``games``.
+    """
     results: dict[str, BacktestResult] = {}
     rows: list[dict[str, Any]] = []
     for m in methods:
         cfg = BacktestConfig(method=m, params=dict((params or {}).get(m, {})), start_week=start_week)
-        res = run_backtest(teams, games, cfg, settings=settings, warmup_games=warmup_games, lines=lines)
+        res = run_backtest(teams, games, cfg, settings=settings, prior=(priors or {}).get(m), lines=lines)
         results[m] = res
         rows.append(res.summary())
     if results:
@@ -239,6 +268,7 @@ def compare_methods(
             "mae": base.get("baseline_mae"),
             "rmse": base.get("baseline_rmse"),
             "weeks": base.get("weeks"),
+            "seasons": base.get("seasons"),
         }
         rows.append(baseline)
         if lines:
@@ -249,7 +279,7 @@ def compare_methods(
                     pred_margin=df["vegas_margin"],
                 )
                 rows.append({"method": "vegas (closing line)", **summarize_predictions(vegas)})
-    cols = ["method", "n", "accuracy", "brier", "log_loss", "mae", "rmse", "weeks"]
+    cols = ["method", "n", "accuracy", "brier", "log_loss", "mae", "rmse", "seasons", "weeks"]
     extra = [c for c in ("ats_accuracy", "vegas_mae") if any(c in r for r in rows)]
     table = pd.DataFrame(rows)
     table = table[[c for c in cols + extra if c in table.columns]]

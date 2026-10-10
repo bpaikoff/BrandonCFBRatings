@@ -55,13 +55,17 @@ class Settings:
     massey_ridge_lambda: float = 1.0
     massey_max_margin: float = 50.0
     massey_half_life_weeks: float = 0.0  # 0 disables recency weighting
+    massey_prior_lambda: float = 3.0  # ridge strength toward a preseason prior
 
     # --- Elo -------------------------------------------------------------------
     elo_k: float = 25.0
     elo_init: float = 1500.0
     elo_per_point: float = 25.0  # Elo points per point of spread (538 convention)
-    elo_season_regress: float = 0.33  # regression to the mean between seasons
     elo_mov_multiplier: bool = True
+
+    # --- season carry-over (all models) -----------------------------------------
+    season_regress: float = 0.33  # fraction of last season's rating regressed to the mean
+    fcs_handling: str = "pool"  # "pool" non-FBS opponents into one pseudo-team | "drop" those games
 
     # --- Bradley-Terry ---------------------------------------------------------
     bt_ridge: float = 1.0
@@ -99,11 +103,13 @@ class Settings:
             massey_ridge_lambda=_env_float("CFB_MASSEY_LAMBDA", base.massey_ridge_lambda),
             massey_max_margin=_env_float("CFB_MASSEY_MAX_MARGIN", base.massey_max_margin),
             massey_half_life_weeks=_env_float("CFB_MASSEY_HALF_LIFE", base.massey_half_life_weeks),
+            massey_prior_lambda=_env_float("CFB_MASSEY_PRIOR_LAMBDA", base.massey_prior_lambda),
             elo_k=_env_float("CFB_ELO_K", base.elo_k),
             elo_init=_env_float("CFB_ELO_INIT", base.elo_init),
             elo_per_point=_env_float("CFB_ELO_PER_POINT", base.elo_per_point),
-            elo_season_regress=_env_float("CFB_ELO_REGRESS", base.elo_season_regress),
             elo_mov_multiplier=_env("CFB_ELO_MOV", "1") not in {"0", "false", "False"},
+            season_regress=_env_float("CFB_SEASON_REGRESS", _env_float("CFB_ELO_REGRESS", base.season_regress)),
+            fcs_handling=_env("CFB_FCS", base.fcs_handling),
             bt_ridge=_env_float("CFB_BT_RIDGE", base.bt_ridge),
             hybrid_weights=weights,
         )

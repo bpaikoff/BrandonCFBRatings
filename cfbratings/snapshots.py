@@ -16,7 +16,7 @@ from typing import Any
 from .config import Settings
 from .config import settings as default_settings
 from .data.cache import JsonCache
-from .data.schema import Game, games_through_week, max_completed_week
+from .data.schema import Game, games_through_week, is_pool_team, max_completed_week
 from .models import make_model
 from .models.base import Ratings
 
@@ -35,17 +35,23 @@ def weekly_snapshots(
     settings: Settings | None = None,
     cache: JsonCache | None = None,
     use_cache: bool = True,
+    prior: Any = None,
     **overrides: Any,
 ) -> dict[int, Ratings]:
-    """Return ``{week: ratings}`` for every week with at least one completed game."""
+    """Return ``{week: ratings}`` for every week of ``season`` with a completed game.
+
+    ``games`` may span several seasons; only ``season`` (default: the latest) is
+    snapshotted, warm-started with ``prior`` when one is given.
+    """
     s = settings or default_settings
     model = make_model(method, s, **overrides)
+    season = season or max((g.season for g in games), default=0)
+    games = [g for g in games if g.season == season]
     last_week = max_completed_week(games)
     if last_week == 0:
         return {}
-    season = season or max(g.season for g in games)
     fingerprint = params_fingerprint(
-        {"method": method, "teams": sorted(teams), "params": getattr(model, "__dict__", {})}
+        {"method": method, "teams": sorted(teams), "params": getattr(model, "__dict__", {}), "prior": prior}
     )
     key = f"snapshots_{season}_{method}_{fingerprint}"
     cache = cache or JsonCache(s.cache_dir, ttl_hours=None)
@@ -66,7 +72,7 @@ def weekly_snapshots(
         if entry and entry.get("_n_games") == len(subset):
             out[week] = {k: v for k, v in entry.items() if not k.startswith("_")}
             continue
-        ratings = model.fit(teams, subset).ratings
+        ratings = model.fit(teams, subset, prior=prior).ratings
         out[week] = ratings
         cached[week] = {**ratings, "_n_games": len(subset)}
         dirty = True
@@ -82,7 +88,7 @@ def trajectory(snapshots: dict[int, Ratings], team: str) -> list[tuple[int, int,
         ratings = snapshots[week]
         if team not in ratings:
             continue
-        ordered = sorted(ratings.items(), key=lambda kv: (-kv[1], kv[0]))
+        ordered = sorted(((t, v) for t, v in ratings.items() if not is_pool_team(t)), key=lambda kv: (-kv[1], kv[0]))
         rank = next(i + 1 for i, (t, _) in enumerate(ordered) if t == team)
         out.append((week, rank, ratings[team]))
     return out

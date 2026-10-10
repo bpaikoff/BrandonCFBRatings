@@ -13,7 +13,7 @@ from typing import Any
 from ..config import Settings
 from ..config import settings as default_settings
 from ..data.schema import Game
-from .base import RatingModel, RatingResult, Ratings
+from .base import Prior, RatingModel, RatingResult, Ratings
 from .bradley_terry import BradleyTerryModel
 from .colley import ColleyModel
 from .elo import EloModel
@@ -60,6 +60,9 @@ def make_model(name: str, settings: Settings | None = None, **overrides: Any) ->
             half_life_weeks=_pick(
                 overrides, "half_life_weeks", _pick(overrides, "massey_half_life_weeks", s.massey_half_life_weeks)
             ),
+            prior_lambda=_pick(
+                overrides, "prior_lambda", _pick(overrides, "massey_prior_lambda", s.massey_prior_lambda)
+            ),
         )
     if name == "elo":
         return EloModel(
@@ -67,9 +70,7 @@ def make_model(name: str, settings: Settings | None = None, **overrides: Any) ->
             init=_pick(overrides, "init", _pick(overrides, "elo_init", s.elo_init)),
             hfa=hfa,
             elo_per_point=_pick(overrides, "elo_per_point", s.elo_per_point),
-            season_regress=_pick(
-                overrides, "season_regress", _pick(overrides, "elo_season_regress", s.elo_season_regress)
-            ),
+            season_regress=_pick(overrides, "season_regress", _pick(overrides, "elo_season_regress", s.season_regress)),
             mov=_pick(overrides, "mov", _pick(overrides, "elo_mov_multiplier", s.elo_mov_multiplier)),
         )
     if name == "bradley_terry":
@@ -89,9 +90,10 @@ def fit_ratings(
     teams: Sequence[str],
     games: Sequence[Game],
     settings: Settings | None = None,
+    prior: Prior | Mapping[str, Prior] | None = None,
     **overrides: Any,
 ) -> RatingResult:
-    return make_model(name, settings, **overrides).fit(teams, games)
+    return make_model(name, settings, **overrides).fit(teams, games, prior=prior)
 
 
 __all__ = [
@@ -102,6 +104,7 @@ __all__ = [
     "EloModel",
     "HybridModel",
     "MasseyModel",
+    "Prior",
     "RatingModel",
     "RatingResult",
     "Ratings",

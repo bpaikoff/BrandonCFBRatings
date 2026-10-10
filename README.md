@@ -12,11 +12,11 @@ system actually predicts games?**
 
 | | |
 |---|---|
-| **Models** | Colley, Massey (ridge, recency-weighted), Elo (margin-of-victory), Bradley-Terry, Hybrid blend |
+| **Models** | Colley, Massey (ridge, recency-weighted), Elo (margin-of-victory), Bradley-Terry, Hybrid blend — all warm-startable from the previous season |
 | **Analytics** | strength of schedule, momentum in points, conference strength index, PPoints résumé score, weekly rank trajectories |
-| **Backtesting** | out-of-sample walk-forward evaluation: accuracy, Brier, log loss, MAE/RMSE, calibration, home-team baseline, Vegas closing-line comparison, grid-search tuning |
+| **Backtesting** | out-of-sample walk-forward evaluation across one or many seasons: accuracy, Brier, log loss, MAE/RMSE, calibration, home-team baseline, Vegas closing-line comparison, grid-search tuning |
 | **Interfaces** | `cfbratings` CLI with CSV/JSON export · Streamlit dashboard · importable Python package |
-| **Data** | [CollegeFootballData.com](https://collegefootballdata.com) API with a TTL JSON cache, or a synthetic season generator for offline use |
+| **Data** | [CollegeFootballData.com](https://collegefootballdata.com) API with a TTL JSON cache (FCS opponents pooled, not dropped), or a synthetic multi-season generator for offline use |
 
 ## Quickstart
 
@@ -31,7 +31,8 @@ cfbratings --demo backtest
 
 # Real data: get a free key at https://collegefootballdata.com/key
 cp .env.example .env             # then set CFBD_API_KEY=...
-cfbratings rank --year 2025 --method hybrid --top 25
+cfbratings rank --year 2025 --warmup-years 1 --method hybrid --top 25   # seeded from 2024
+cfbratings backtest --years 2022-2025 --start-week 1                    # multi-season evaluation
 streamlit run apps/streamlit_app.py
 ```
 
@@ -48,7 +49,7 @@ streamlit run apps/streamlit_app.py
 | `cfbratings snapshot` | compute and cache weekly rating snapshots |
 | `cfbratings cache list\|clear` | inspect the JSON cache |
 
-Global flags: `--year`, `--season-type {regular,postseason,both}`, `--demo`, `--refresh`, `--cache-dir`, `--param KEY=VALUE` (per-model overrides such as `--param k=30`).
+Global flags: `--year`, `--years 2022-2024`, `--warmup-years N` (load N earlier seasons and seed the ratings from them), `--fcs {pool,drop}`, `--season-type {regular,postseason,both}`, `--demo`, `--refresh`, `--cache-dir`, `--param KEY=VALUE` (per-model overrides such as `--param k=30`).
 
 Example (synthetic season, so the numbers are illustrative):
 
@@ -101,16 +102,22 @@ Full derivations live in [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md). In brief:
 
 **Calibration.** Ratings are turned into spreads and probabilities with `margin = HFA + slope × (r_h − r_a)` and `P = Φ(margin/σ)`. The calibrator is fitted by *k-fold cross-validation* (each game predicted by a model that never saw it) with a degrees-of-freedom-corrected σ, which stops a one-parameter-per-team model from looking overconfident in September.
 
+**Warm starts.** Every model accepts a prior: last season's final ratings regressed a third of the way to the mean (`CFB_SEASON_REGRESS`). Colley plays its pseudo-games at the prior, Massey shrinks toward it, Elo starts from it, Bradley-Terry penalises distance from it. Load earlier seasons with `--warmup-years` (CLI) or the sidebar control (dashboard) and September ratings stop being coin flips.
+
+**FCS games.** Opponents outside FBS are pooled into one pseudo-team that is rated but never ranked, so a loss to an FCS program costs what it should instead of vanishing from the data (`--fcs drop` restores the old behaviour).
+
 **PPoints** is a committee-style résumé score: wins earn tier points by the opponent's rank (blended between its rank *entering that week* and its rank *now*), multiplied by a road/neutral bonus and the opponent's conference strength; losses cost `4 ÷ tier`, so losing to #3 barely stings while losing to #90 costs four points. Non-conference games earn a bonus and a softer loss penalty.
 
 ## Backtesting
 
-The engine refits the model each week on every earlier game, calibrates on cross-validated and previously held-out predictions, and scores that week's games out-of-sample. Two reference rows accompany every run: **home_prior** (always pick the home team) and, with `--lines`, the **Vegas closing spread**. A system that cannot beat the home-team baseline is noise; one that approaches the market is excellent.
+The engine refits the model each week on every earlier game, calibrates on cross-validated and previously held-out predictions, and scores that week's games out-of-sample. Given several seasons it walks them in order and warm-starts each one from the regressed ratings of the season before, so evaluation can begin in week 1. Two reference rows accompany every run: **home_prior** (always pick the home team) and, with `--lines`, the **Vegas closing spread**. A system that cannot beat the home-team baseline is noise; one that approaches the market is excellent.
 
 ```bash
-cfbratings backtest --year 2024 --methods massey,elo,hybrid --start-week 4 --lines --by-week
-cfbratings tune --year 2024 --method massey --grid "ridge_lambda=0.1,0.5,1,2,4;half_life_weeks=0,4,8" --metric brier
+cfbratings backtest --years 2022-2024 --methods massey,elo,hybrid --start-week 1 --lines --by-week
+cfbratings tune --years 2023-2024 --method massey --grid "prior_lambda=1,3,5;ridge_lambda=0.5,1,2" --metric brier
 ```
+
+On the synthetic three-season benchmark (seed 7), warm starts improve every model on identical weeks, e.g. Elo log loss 0.595 → 0.569 and Massey MAE 13.4 → 13.1 points for weeks 4+, and weeks 1–3 become predictable at all.
 
 From Python:
 
@@ -136,8 +143,10 @@ Settings come from environment variables or a `.env` file (see [`.env.example`](
 | `CFB_CACHE_DIR` / `CFB_CACHE_TTL_HOURS` | `data/cache` / `6` | JSON cache (finished seasons never expire) |
 | `CFB_HFA` | `2.5` | home-field advantage in points (never applied on neutral sites) |
 | `CFB_COLLEY_PRIOR` | `2.0` | Colley pseudo-games |
-| `CFB_MASSEY_LAMBDA` / `CFB_MASSEY_MAX_MARGIN` / `CFB_MASSEY_HALF_LIFE` | `1.0` / `50` / `0` | Massey ridge, margin cap, recency half-life (weeks) |
-| `CFB_ELO_K` / `CFB_ELO_INIT` / `CFB_ELO_PER_POINT` / `CFB_ELO_REGRESS` / `CFB_ELO_MOV` | `25` / `1500` / `25` / `0.33` / `1` | Elo parameters |
+| `CFB_MASSEY_LAMBDA` / `CFB_MASSEY_MAX_MARGIN` / `CFB_MASSEY_HALF_LIFE` / `CFB_MASSEY_PRIOR_LAMBDA` | `1.0` / `50` / `0` / `3.0` | Massey ridge, margin cap, recency half-life (weeks), ridge toward a preseason prior |
+| `CFB_ELO_K` / `CFB_ELO_INIT` / `CFB_ELO_PER_POINT` / `CFB_ELO_MOV` | `25` / `1500` / `25` / `1` | Elo parameters |
+| `CFB_SEASON_REGRESS` | `0.33` | fraction of last season's rating regressed to the mean when warm-starting (all models) |
+| `CFB_FCS` | `pool` | `pool` FCS opponents into one pseudo-team or `drop` those games |
 | `CFB_BT_RIDGE` | `1.0` | Bradley-Terry L2 penalty |
 | `CFB_HYBRID_WEIGHTS` | `colley=⅓,massey=⅓,elo=⅓` | hybrid blend |
 
@@ -149,6 +158,7 @@ cfbratings/
   data/              Game & Team schema, JSON cache, CFBD client, synthetic seasons
   models/            colley, massey, elo, bradley_terry, hybrid + registry
   predict.py         MarginCalibrator: ratings → spreads & win probabilities
+  priors.py          preseason priors / warm starts chained across seasons
   analytics.py       records, SOS, momentum, conference strength, team/schedule tables
   ppoints.py         PPoints résumé metric
   snapshots.py       weekly rating snapshots (cached)
@@ -165,7 +175,7 @@ tests/                 pytest suite (models, calibration, analytics, backtest, C
 ```bash
 make install     # pip install -e ".[dev]"
 make lint        # ruff check + format check
-make test        # pytest (57 tests, ~1 min incl. dashboard smoke test)
+make test        # pytest (~70 tests, ~1 min incl. dashboard smoke test)
 make test-fast   # skip the dashboard smoke test
 make app         # streamlit run apps/streamlit_app.py
 ```
@@ -174,10 +184,9 @@ CI runs lint and the test-suite on Python 3.11–3.13 for every push and pull re
 
 ## Roadmap
 
-* Multi-season warm starts in the CLI (the engine already accepts `warmup_games`)
-* Pool FCS opponents into a single pseudo-team instead of dropping those games
-* Preseason priors from returning production / recruiting
+* Preseason priors that also use returning production / recruiting, not just last season
 * Playoff-probability simulation from calibrated win probabilities
+* Offense / defense split ratings (Massey decomposition)
 
 ## Acknowledgements
 

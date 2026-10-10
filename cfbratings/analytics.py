@@ -8,7 +8,7 @@ from statistics import median
 import numpy as np
 import pandas as pd
 
-from .data.schema import Game, Record
+from .data.schema import Game, Record, is_pool_team
 from .models.base import RatingResult, Ratings
 from .predict import MarginCalibrator
 
@@ -92,6 +92,8 @@ def conference_strength(
     """
     by_conf: dict[str, list[float]] = {}
     for team, r in ratings.items():
+        if is_pool_team(team):
+            continue
         by_conf.setdefault(conference_map.get(team) or "Independent", []).append(float(r))
     raw: dict[str, float] = {}
     for conf, vals in by_conf.items():
@@ -117,7 +119,11 @@ def conference_table(
     strength = conference_strength(ratings, conference_map)
     rows = []
     for conf, idx in strength.items():
-        members = [t for t, c in conference_map.items() if (c or "Independent") == conf and t in ratings]
+        members = [
+            t
+            for t, c in conference_map.items()
+            if (c or "Independent") == conf and t in ratings and not is_pool_team(t)
+        ]
         vals = [ratings[t] for t in members]
         top = max(members, key=lambda t: ratings[t]) if members else ""
         row = {
@@ -183,6 +189,7 @@ def schedule_table(
     rows = []
     for g in sorted((g for g in games if team in (g.home, g.away)), key=lambda g: g.order_key):
         opp = g.opponent(team)
+        opp_label = g.display_name(opp) + (" (FCS)" if is_pool_team(opp) else "")
         is_home = g.home == team
         rh, ra = result.get(g.home), result.get(g.away)
         exp_home = calibrator.predict_margin(rh, ra, g.neutral_site)
@@ -191,7 +198,7 @@ def schedule_table(
         row = {
             "week": g.week,
             "type": "Bowl" if g.season_type == "postseason" else "Regular",
-            "opponent": opp,
+            "opponent": opp_label,
             "opp_rank": rank.get(opp),
             "site": "Neutral" if g.neutral_site else ("Home" if is_home else "Away"),
             "expected_margin": exp,

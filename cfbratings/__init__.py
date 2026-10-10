@@ -12,7 +12,7 @@ Public surface:
 
 from __future__ import annotations
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 from .config import Settings, settings
 from .data.schema import Game, Team, completed_games, normalize_games, normalize_teams

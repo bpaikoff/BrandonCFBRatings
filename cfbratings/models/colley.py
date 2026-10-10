@@ -5,8 +5,10 @@ Colley (2002) rates teams purely from wins and losses with a Laplace prior::
     (2 + n_i) r_i - sum_{j in opponents(i)} r_j = 1 + (w_i - l_i) / 2
 
 The ``prior_strength`` parameter generalises the ``2`` (two pseudo-games against an
-average team). The system is symmetric positive-definite whenever every team has played
-at least one rated game; isolated teams simply keep the prior rating of 0.5.
+average team). With a ``prior`` the right-hand side becomes ``prior_strength * r0_i +
+(w_i - l_i)/2``, i.e. the pseudo-games are played at the team's prior rating ``r0_i``
+instead of 0.5 (useful for carrying last season forward). The system is symmetric
+positive-definite; isolated teams simply keep their prior rating.
 """
 
 from __future__ import annotations
@@ -17,13 +19,14 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..data.schema import Game
-from .base import RatingResult, index_teams, usable_games
+from .base import Prior, RatingResult, index_teams, prior_vector, usable_games
 
 
 def build_colley(
     teams: Sequence[str],
     games: Sequence[Game],
     prior_strength: float = 2.0,
+    prior: Prior | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return ``(C, b)`` such that ``C r = b`` gives Colley ratings."""
     n = len(teams)
@@ -47,7 +50,7 @@ def build_colley(
             net[j] += 1
             net[i] -= 1
     C = np.diag(prior_strength + played) - opp
-    b = prior_strength / 2.0 + 0.5 * net
+    b = prior_strength * prior_vector(teams, prior, 0.5) + 0.5 * net
     return C, b
 
 
@@ -66,8 +69,8 @@ class ColleyModel:
     prior_strength: float = 2.0
     name: str = "colley"
 
-    def fit(self, teams: Sequence[str], games: Sequence[Game]) -> RatingResult:
-        C, b = build_colley(teams, games, self.prior_strength)
+    def fit(self, teams: Sequence[str], games: Sequence[Game], prior: Prior | None = None) -> RatingResult:
+        C, b = build_colley(teams, games, self.prior_strength, prior=prior)
         r = solve_colley(C, b)
         return RatingResult(
             method=self.name,
