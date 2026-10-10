@@ -75,7 +75,11 @@ is a proper probability model and copes with undefeated teams thanks to the pena
 
 Component ratings are standardised to z-scores (so points, probabilities and Elo units are
 commensurable) and blended with user-supplied weights that are normalised to sum to one.
-The default is an equal blend of Colley, Massey and Elo.
+The default blend is 0.6 Massey, 0.2 Colley and 0.2 Elo. It was an equal blend until the
+real-data backtests ([`BACKTEST_RESULTS.md`](BACKTEST_RESULTS.md)): on 2021-2024 the log loss
+falls monotonically as Massey's share rises, and the 2025 hold-out confirms it (0.482 for the
+equal blend, 0.475 at 0.6 Massey, 0.473 at 0.8), so the blend now leans on the margin-based
+view while keeping a real share of the win-loss and sequential views.
 
 ### 1.6 Preseason priors (warm starts)
 
@@ -102,7 +106,10 @@ Priors chain across seasons (each season's prior is the regressed fit of a seaso
 itself warm-started), and the previous season's calibrator is carried across the boundary
 so that week-1 spreads are on a sensible scale even for models whose ratings have no
 natural point units. For the synthetic benchmark ($\lambda_p=3$, $\rho=0.33$) the warm start
-lowers log loss on identical weeks for every model and lets evaluation begin in week 1.
+lowers log loss on identical weeks for every model and lets evaluation begin in week 1. The
+real 2025 season behaves the same way: seeded from 2024 and graded from week 4, every model
+gains 0.015 to 0.027 log loss and 0.3 to 0.5 points of MAE (see
+[`BACKTEST_RESULTS.md`](BACKTEST_RESULTS.md)).
 
 ### 1.7 Games against FCS opponents
 

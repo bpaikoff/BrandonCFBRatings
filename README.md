@@ -16,7 +16,7 @@ system actually predicts games?**
 | **Analytics** | strength of schedule, momentum in points, conference strength index, PPoints résumé score, weekly rank trajectories, exact rest-of-season record projections |
 | **Backtesting** | out-of-sample walk-forward evaluation across one or many seasons: accuracy, Brier, log loss, MAE/RMSE, calibration, home-team baseline, Vegas closing-line comparison, grid-search tuning |
 | **Interfaces** | `cfbratings` CLI with CSV/JSON export · Streamlit dashboard · importable Python package |
-| **Data** | [CollegeFootballData.com](https://collegefootballdata.com) API behind a two-tier cache (working cache plus a committed archive of finished seasons, so a season costs two or three API calls ever), FCS opponents pooled rather than dropped, or a synthetic multi-season generator for offline use |
+| **Data** | [CollegeFootballData.com](https://collegefootballdata.com) API behind a two-tier cache (working cache plus a committed archive of finished seasons, so a season costs two or three API calls ever; the 2021–2025 seasons ship in the archive), FCS opponents pooled rather than dropped, or a synthetic multi-season generator for offline use |
 
 ## Quickstart
 
@@ -52,29 +52,34 @@ streamlit run apps/streamlit_app.py
 
 Global flags: `--year`, `--years 2022-2024`, `--warmup-years N` (load N earlier seasons and seed the ratings from them), `--fcs {pool,drop}`, `--season-type {regular,postseason,both}`, `--demo`, `--demo-weeks N` (mid-season demo), `--refresh`, `--cache-dir`, `--param KEY=VALUE` (per-model overrides such as `--param k=30`).
 
-Example (synthetic season, so the numbers are illustrative):
+Example (real data: the 2025 season warm-started from 2024, and the five-season walk-forward):
 
 ```
-$ cfbratings --demo rank --top 5
-Hybrid ratings — synthetic season 2026 (seed 7)
-calibration: HFA +3.60 pts, slope 8.923, sigma 15.8 pts (cross_val, n=388)
+$ cfbratings --year 2025 --warmup-years 1 rank --top 5
+Hybrid ratings — 2025 — CFBD 2024-2025 (both, FCS pooled) — warm-started from 1 prior season
+calibration: HFA +3.59 pts, slope 10.627, sigma 14.8 pts (cross_val, n=934)
 
- rank             team   conference record  rating    sos  sos_rank  momentum  ppoints
-    1 Prairie Northern       Big 12    9-1   1.955  0.225        18     2.359   58.324
-    2    Lakes Western      Big Ten   14-0   1.847 -0.265        49     5.432   80.193
-    3   Lakes Northern      Big Ten   10-2   1.798  0.517         5     5.126   71.324
-    4  Heartland State Mid-American   11-1   1.615 -0.050        34    -5.465   49.751
-    5 Mountain Central Mountain West  11-1   1.500 -0.302        53    -3.158   43.992
+ rank       team       conference record  rating    sos  sos_rank  momentum  ppoints
+    1    Indiana          Big Ten   16-0   2.712  0.522         8    14.923  104.525
+    2 Ohio State          Big Ten   12-2   2.224  0.462        10    -0.967   56.148
+    3 Notre Dame FBS Independents   10-2   2.130  0.351        24    14.730   44.419
+    4     Oregon          Big Ten   13-2   2.009  0.548         7    -0.474   71.847
+    5      Miami              ACC   13-3   1.926  0.639         4     5.676  106.069
 
-$ cfbratings --demo backtest --start-week 4
-               method   n  accuracy  brier  log_loss     mae    rmse weeks
-               colley 301    0.7143 0.1909    0.5671 13.4276 16.9273  4-14
-               massey 301    0.7243 0.1811    0.5458 12.9153 16.2227  4-14
-                  elo 301    0.7276 0.1873    0.5630 13.3991 16.8007  4-14
-        bradley_terry 301    0.7243 0.1913    0.5696 13.5428 17.0081  4-14
-               hybrid 301    0.7575 0.1820    0.5478 12.9716 16.3349  4-14
-home_prior (baseline) 301    0.5515 0.2476    0.6883 16.4269 20.2327  4-14
+$ cfbratings --years 2021-2025 backtest --start-week 1 --lines
+               method    n  accuracy  brier  log_loss     mae    rmse   seasons weeks  ats_accuracy  vegas_mae
+               colley 4457    0.7168 0.1840    0.5431 14.1497 17.9010 2021-2025  1-17        0.5002    12.1126
+               massey 4457    0.7361 0.1718    0.5113 13.2929 16.8195 2021-2025  1-17        0.4970    12.1126
+                  elo 4457    0.7195 0.1794    0.5323 13.9076 17.6065 2021-2025  1-17        0.4909    12.1126
+        bradley_terry 4457    0.7148 0.1820    0.5377 14.0671 17.7728 2021-2025  1-17        0.4868    12.1126
+               hybrid 4457    0.7303 0.1722    0.5119 13.2145 16.7118 2021-2025  1-17        0.4939    12.1126
+home_prior (baseline) 4457    0.6280 0.2415    0.6790 18.2180 22.7548 2021-2025  1-17           NaN        NaN
+ vegas (closing line) 4435    0.7547 0.1617    0.4826 12.1126 15.2734       NaN   NaN           NaN        NaN
 ```
+
+Both commands run with **zero** API calls on a fresh clone: the 2021–2025 seasons ship in
+`data/archive/`. With `--demo` the same commands run on a synthetic season whose numbers are
+illustrative only.
 
 ## Dashboard
 
@@ -121,7 +126,7 @@ cfbratings backtest --years 2022-2024 --methods massey,elo,hybrid --start-week 1
 cfbratings tune --years 2023-2024 --method massey --grid "prior_lambda=1,3,5;ridge_lambda=0.5,1,2" --metric brier
 ```
 
-On the synthetic three-season benchmark (seed 7), warm starts improve every model on identical weeks, e.g. Elo log loss 0.595 → 0.569 and Massey MAE 13.4 → 13.1 points for weeks 4+, and weeks 1–3 become predictable at all.
+On real seasons the warm start improves every model on identical weeks: grading 2025 from week 4, Massey's log loss falls 0.536 → 0.521 and its MAE 12.4 → 12.1 points when the ratings are seeded from 2024, and weeks 1–3 become gradable at all. Over 2021–2025 (4 457 games from week 1) warm-started Massey posts 0.511 log loss and 13.3 points of MAE against 0.679 / 18.2 for the home-team baseline and 0.483 / 12.1 for the closing line. The full real-data results, including the tuning grids and their 2025 hold-out, are in [`docs/BACKTEST_RESULTS.md`](docs/BACKTEST_RESULTS.md).
 
 From Python:
 
@@ -153,7 +158,7 @@ Settings come from environment variables or a `.env` file (see [`.env.example`](
 | `CFB_SEASON_REGRESS` | `0.33` | fraction of last season's rating regressed to the mean when warm-starting (all models) |
 | `CFB_FCS` | `pool` | `pool` FCS opponents into one pseudo-team or `drop` those games |
 | `CFB_BT_RIDGE` | `1.0` | Bradley-Terry L2 penalty |
-| `CFB_HYBRID_WEIGHTS` | `colley=⅓,massey=⅓,elo=⅓` | hybrid blend |
+| `CFB_HYBRID_WEIGHTS` | `colley=0.2,massey=0.6,elo=0.2` | hybrid blend (tuned on real seasons, see [`docs/BACKTEST_RESULTS.md`](docs/BACKTEST_RESULTS.md)) |
 
 ## Project layout
 
@@ -186,7 +191,7 @@ make test-fast   # skip the dashboard smoke test
 make app         # streamlit run apps/streamlit_app.py
 ```
 
-CI runs lint and the test-suite on Python 3.11–3.13 for every push and pull request. Models and the backtest engine are validated against synthetic seasons with known team strengths, so the tests assert that each system recovers the true ordering and beats the home-team baseline out of sample.
+CI runs lint and the test-suite on Python 3.11–3.13 for every push and pull request. Models and the backtest engine are validated against synthetic seasons with known team strengths, so the tests assert that each system recovers the true ordering and beats the home-team baseline out of sample; the parsers are also checked against a real trimmed 2024 payload. The suite never touches the network, even with a real `CFBD_API_KEY` in the environment.
 
 ## Roadmap
 
