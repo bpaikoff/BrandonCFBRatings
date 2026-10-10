@@ -157,7 +157,12 @@ def team_table(
     recs = records(teams, games)
     sos = strength_of_schedule(teams, games, result.ratings)
     mom = momentum(teams, games, result, calibrator)
-    sos_rank = {t: i + 1 for i, (t, _) in enumerate(sorted(sos.items(), key=lambda kv: -kv[1]))}
+    sos_rank = {
+        t: i + 1
+        for i, (t, _) in enumerate(
+            sorted(((t, v) for t, v in sos.items() if not is_pool_team(t)), key=lambda kv: -kv[1])
+        )
+    }
     rows = []
     for rank, (team, rating) in enumerate(result.ranked(), start=1):
         row = {

@@ -63,8 +63,9 @@ def ppoints(
     """Compute PPoints for every team.
 
     ``weekly_ratings`` maps week → ratings *after* that week completed (see
-    :mod:`cfbratings.snapshots`). The rank entering week ``w`` is taken from snapshot
-    ``w - 1``; when unavailable the current ratings are used instead.
+    :mod:`cfbratings.snapshots`; week 0 is the preseason prior when one exists). The rank
+    entering week ``w`` is taken from snapshot ``w - 1``; when unavailable the current
+    ratings are used instead -- never a snapshot that already contains the game itself.
     """
     cfg = config or PPointsConfig()
     weekly = weekly_ratings or {}
@@ -78,7 +79,7 @@ def ppoints(
 
     def week_context(week: int) -> tuple[dict[str, int], dict[str, float]]:
         if week not in week_cache:
-            snap = weekly.get(week - 1) or weekly.get(week)
+            snap = weekly.get(week - 1)  # entering-week snapshot (week 0 = preseason prior when warm-started)
             if snap:
                 week_cache[week] = (_rank_map(snap), conference_strength(snap, conference_map))
             else:

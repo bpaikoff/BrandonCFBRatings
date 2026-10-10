@@ -131,6 +131,8 @@ def rolling_calibrator(
         return prior
     weeks = np.array([p[0] for p in pairs], dtype=float)
     weights = decay ** (week - weeks)
+    if float(weights.sum()) < min_pairs:  # e.g. week 1 of a new season: only stale pairs remain
+        return prior
     return MarginCalibrator.from_arrays(
         [p[1] for p in pairs],
         [p[2] for p in pairs],
@@ -159,7 +161,11 @@ def run_backtest(
     if cfg.method not in MODEL_NAMES:
         raise ValueError(f"unknown method {cfg.method!r}")
     model = make_model(cfg.method, s, **cfg.params)
-    regress = s.season_regress if cfg.season_regress is None else cfg.season_regress
+    regress = cfg.season_regress
+    if regress is None:
+        regress = cfg.params.get("season_regress")  # a plain --param season_regress=… override
+    if regress is None:
+        regress = s.season_regress
     team_set = set(teams)
     played = sorted(
         (g for g in games if g.has_score and g.home in team_set and g.away in team_set),
@@ -277,7 +283,7 @@ def compare_methods(
                 vegas = df.assign(
                     p_home=[normal_cdf(m / 16.0) for m in df["vegas_margin"]],
                     pred_margin=df["vegas_margin"],
-                )
+                ).drop(columns=["vegas_margin"])  # the line cannot be graded against itself
                 rows.append({"method": "vegas (closing line)", **summarize_predictions(vegas)})
     cols = ["method", "n", "accuracy", "brier", "log_loss", "mae", "rmse", "seasons", "weeks"]
     extra = [c for c in ("ats_accuracy", "vegas_mae") if any(c in r for r in rows)]

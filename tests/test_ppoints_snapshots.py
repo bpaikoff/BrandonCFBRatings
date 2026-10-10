@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from cfbratings.data.schema import Game
 from cfbratings.models import make_model
 from cfbratings.ppoints import PPointsConfig, ppoints
@@ -74,6 +76,20 @@ def test_ppoints_uses_weekly_snapshot_for_game_time_rank():
         config=PPointsConfig(weight_current=1.0),
     )
     assert abs(pp_now["T40"] - pp_now["T41"]) < 1e-9
+
+
+def test_ppoints_never_uses_the_post_game_snapshot():
+    teams = [f"T{i}" for i in range(1, 71)]
+    current = {t: float(len(teams) - i) for i, t in enumerate(teams)}
+    post_game = dict(current)
+    post_game["T5"] = -1000.0  # after losing in week 1, T5 looks terrible in the week-1 snapshot
+    games = [_game(1, "T40", "T5", 21, 20, week=1)]
+    cfg = PPointsConfig(weight_current=0.0)
+    conf = dict.fromkeys(teams, "C")
+    only_post = ppoints(teams, games, current, conf, weekly_ratings={1: post_game}, config=cfg)
+    preseason = ppoints(teams, games, current, conf, weekly_ratings={0: current, 1: post_game}, config=cfg)
+    # Graded as the #5 team it was entering the week: tier 8 x conference factor 1.1 (single conference).
+    assert only_post["T40"] == preseason["T40"] == pytest.approx(8.8)
 
 
 def test_weekly_snapshots_cache_and_trajectory(season, settings):

@@ -2,6 +2,22 @@
 
 ## 1.2.0 — 2026-10-10
 
+### Fixes (from a full-branch code review)
+- `season_regress` passed as a model override (`--param`, dashboard slider, `compare_methods`
+  params) now actually controls the prior carry-over; it was silently ignored.
+- The dashboard runs in the preseason when a warm-up season is loaded (it previously
+  refused with "no completed games") and shows preseason rankings and projections.
+- PPoints no longer grades a week-1 opponent on the snapshot that already contains the
+  game; warm-started snapshots now include week 0 (the preseason prior) for this.
+- The pooled FCS pseudo-team no longer occupies a strength-of-schedule rank slot or a slot
+  in the trajectory chart, and is excluded from z-score statistics.
+- The Vegas reference row no longer reports a meaningless 0 % against-the-spread accuracy.
+- Massey `prior_lambda` defaults to `ridge_lambda` as documented when constructed directly
+  (settings still supply 3.0); the docs now say which knob matters on warm-started data.
+- The rolling calibrator ignores stale cross-season pairs whose total weight is negligible.
+- Dashboard caches key on game content (ids and scores), so a score correction after a
+  refresh is picked up, and "Refresh API cache" is a one-shot rather than sticky.
+
 ### Features
 - **Rest-of-season projections** (`cfbratings.projections`): exact Poisson-binomial win
   distributions for every team's remaining schedule — projected record, P(6+/8+/10+/12+

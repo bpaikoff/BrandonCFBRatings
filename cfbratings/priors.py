@@ -54,6 +54,15 @@ def regress_toward(ratings: Mapping[str, float], fraction: float, center: float 
     return {t: float(r + (c - r) * fraction) for t, r in ratings.items()}
 
 
+def _regress_fraction(s: Settings, regress: float | None, overrides: Mapping[str, Any]) -> float:
+    """Explicit ``regress`` wins, then a ``season_regress`` model override, then settings."""
+    if regress is not None:
+        return float(regress)
+    if overrides.get("season_regress") is not None:
+        return float(overrides["season_regress"])
+    return s.season_regress
+
+
 def result_to_prior(model: RatingModel, result: RatingResult, regress: float) -> Prior | dict[str, Prior]:
     """Regressed end-of-season ratings in the units the model expects as a prior."""
     if isinstance(model, HybridModel):
@@ -100,7 +109,7 @@ def season_priors(
     """
     s = settings or default_settings
     model = make_model(method, s, **overrides)
-    fraction = s.season_regress if regress is None else regress
+    fraction = _regress_fraction(s, regress, overrides)
     seasons = sorted({g.season for g in games if g.has_score})
     out: dict[int, Prior | dict[str, Prior]] = {}
     prior: Any = None
@@ -145,7 +154,7 @@ def warm_start(
     if not earlier:
         return WarmStart()
     model = make_model(method, s, **overrides)
-    fraction = s.season_regress if regress is None else regress
+    fraction = _regress_fraction(s, regress, overrides)
     prior: Any = None
     calibrator: MarginCalibrator | None = None
     for year in earlier:

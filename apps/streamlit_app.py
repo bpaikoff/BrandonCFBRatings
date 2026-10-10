@@ -6,6 +6,7 @@ Run with ``streamlit run apps/streamlit_app.py``. Works without an API key in de
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import sys
@@ -108,7 +109,15 @@ def _team_dict(t: Team) -> dict:
 
 @st.cache_data(show_spinner="Loading season…")
 def load_data(
-    demo: bool, year: int, warmup: int, season_type: str, fcs: str, refresh_token: int, seed: int, demo_weeks: int
+    demo: bool,
+    year: int,
+    warmup: int,
+    season_type: str,
+    fcs: str,
+    refresh_token: int,
+    force_refresh: bool,
+    seed: int,
+    demo_weeks: int,
 ):
     years = list(range(year - warmup, year + 1))
     span = f"{years[0]}-{years[-1]}" if warmup else str(year)
@@ -120,7 +129,7 @@ def load_data(
             [g.to_dict() for g in games],
             f"Synthetic season {span} (seed {seed})",
         )
-    teams, games = load_seasons(years, season_type, force_refresh=refresh_token > 0, fcs=fcs)
+    teams, games = load_seasons(years, season_type, force_refresh=force_refresh, fcs=fcs)
     label = f"CollegeFootballData · {span} · {season_type} · FCS {'pooled' if fcs == 'pool' else 'dropped'}"
     return [_team_dict(t) for t in teams], [g.to_dict() for g in games], label
 
@@ -215,7 +224,7 @@ with st.sidebar:
 
     with st.expander("Model parameters"):
         hfa = st.slider("Home-field advantage (pts)", 0.0, 5.0, float(settings.home_field_adv), 0.1)
-        colley_prior = st.slider("Colley prior strength", 0.0, 6.0, float(settings.colley_prior_strength), 0.5)
+        colley_prior = st.slider("Colley prior strength", 0.5, 6.0, float(settings.colley_prior_strength), 0.5)
         ridge_lambda = st.slider("Massey ridge lambda", 0.0, 5.0, float(settings.massey_ridge_lambda), 0.1)
         prior_lambda = st.slider("Massey prior strength", 0.5, 10.0, float(settings.massey_prior_lambda), 0.5)
         half_life = st.slider(
@@ -232,8 +241,10 @@ with st.sidebar:
 
     if "refresh_token" not in st.session_state:
         st.session_state.refresh_token = 0
-    if st.button("Refresh API cache", disabled=demo):
+    if st.button("Refresh API cache", disabled=demo, help="Re-download this selection from CFBD once."):
         st.session_state.refresh_token += 1
+        st.session_state.refresh_pending = True
+    force_refresh = bool(st.session_state.pop("refresh_pending", False))
     st.caption(f"cfbratings v{__version__}")
 
 weights = {
@@ -257,7 +268,7 @@ theme = current_theme()
 
 try:
     teams_raw, games_raw, source_label = load_data(
-        demo, year, warmup, season_type, fcs, st.session_state.refresh_token, seed, demo_weeks
+        demo, year, warmup, season_type, fcs, st.session_state.refresh_token, force_refresh, seed, demo_weeks
     )
 except CFBDError as exc:
     st.error(str(exc))
@@ -276,11 +287,15 @@ games = [g for g in all_games if g.season == season]
 last_week = max_completed_week(games)
 n_played = sum(1 for g in games if g.has_score)
 n_unplayed = sum(1 for g in games if not g.has_score)
-n_prior_seasons = len({g.season for g in all_games if g.has_score}) - (1 if n_played else 0)
-data_key = f"{demo}-{year}-{warmup}-{season_type}-{fcs}-{seed}-{demo_weeks}-{len(all_games)}-{n_played}-{last_week}"
+n_prior_seasons = len({g.season for g in all_games if g.has_score and g.season < season})
+_content = hashlib.md5(
+    json.dumps(sorted((g.id, g.season, g.home_points, g.away_points, g.completed) for g in all_games)).encode()
+).hexdigest()[:12]
+data_key = f"{demo}-{year}-{warmup}-{season_type}-{fcs}-{seed}-{demo_weeks}-{_content}"
 
 st.title("College Football Ratings")
-bits = [source_label, MODEL_LABELS[method], f"{n_played} games through week {last_week}"]
+bits = [source_label, MODEL_LABELS[method]]
+bits.append(f"{n_played} games through week {last_week}" if n_played else "preseason (no games played yet)")
 if n_unplayed:
     bits.append(f"{n_unplayed} still to play")
 if n_prior_seasons > 0:

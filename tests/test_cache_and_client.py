@@ -50,15 +50,19 @@ class _FakeResponse:
 
 
 class _FakeSession:
+    """Routes keyed by path, or by ``(path, year)`` when a payload depends on the season."""
+
     def __init__(self, routes):
         self.routes = routes
         self.calls = []
 
     def get(self, url, params=None, headers=None, timeout=None):
-        self.calls.append((url, dict(params or {})))
+        params = dict(params or {})
+        self.calls.append((url, params))
         assert headers["Authorization"].startswith("Bearer ")
         path = url.split("collegefootballdata.com")[-1]
-        return _FakeResponse(self.routes[path])
+        key = (path, params.get("year"))
+        return _FakeResponse(self.routes[key] if key in self.routes else self.routes[path])
 
 
 def test_client_requires_api_key(tmp_path):
@@ -116,26 +120,29 @@ def test_client_caches_and_filters(tmp_path):
 
 
 def test_load_seasons_merges_rosters(tmp_path):
+    def game(gid, season, home, away):
+        return {
+            "id": gid,
+            "season": season,
+            "week": 1,
+            "homeTeam": home,
+            "awayTeam": away,
+            "homePoints": 20,
+            "awayPoints": 10,
+            "completed": True,
+        }
+
     routes = {
-        "/teams/fbs": [{"school": "A"}, {"school": "B"}],
-        "/games": [
-            {
-                "id": 1,
-                "season": 2023,
-                "week": 1,
-                "homeTeam": "A",
-                "awayTeam": "B",
-                "homePoints": 20,
-                "awayPoints": 10,
-                "completed": True,
-            },
-        ],
+        ("/teams/fbs", 2023): [{"school": "A"}, {"school": "B"}, {"school": "C"}],  # C left FBS after 2023
+        ("/teams/fbs", 2024): [{"school": "A"}, {"school": "B"}, {"school": "D"}],  # D joined in 2024
+        ("/games", 2023): [game(1, 2023, "A", "C")],
+        ("/games", 2024): [game(2, 2024, "D", "B")],
     }
     session = _FakeSession(routes)
     client = CFBDClient(Settings(api_key="secret", cache_dir=tmp_path), session=session)
     teams, games = load_seasons([2024, 2023], "regular", client=client)
-    assert [t.school for t in teams] == ["A", "B"]
-    assert len(games) == 2 and games[0].season == games[1].season == 2023
+    assert [t.school for t in teams] == ["A", "B", "D", "C"]  # latest roster first, earlier-only teams appended
+    assert [(g.id, g.season) for g in games] == [(1, 2023), (2, 2024)]
 
 
 def test_consensus_spreads_fallback_to_mean():

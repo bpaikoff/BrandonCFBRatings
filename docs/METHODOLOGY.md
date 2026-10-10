@@ -93,7 +93,7 @@ prior enters each model in its natural place:
 | Model | Prior mechanism |
 |---|---|
 | Colley | the `prior_strength` pseudo-games are played at $r^0_i$ instead of 0.5: $b_i = \text{prior\_strength}\cdot r^0_i + (w_i - l_i)/2$ |
-| Massey | ridge toward the prior, $\lambda_p \lVert r - r^0 \rVert^2$ with $\lambda_p = 3$ (a prior carries real information and gets more weight than shrinkage toward zero) |
+| Massey | ridge toward the prior, $\lambda_p \lVert r - r^0 \rVert^2$ with $\lambda_p = 3$ (`massey_prior_lambda`; a prior carries real information and gets more weight than shrinkage toward zero). With a prior present `ridge_lambda` plays no role, so tune $\lambda_p$ on warm-started data |
 | Elo | ratings simply start at $r^0$ |
 | Bradley-Terry | penalty $\tfrac{\text{ridge}}{2}\lVert r - r^0\rVert^2$ |
 | Hybrid | one prior per component |
@@ -152,7 +152,8 @@ with the same pseudo-observation weight, which keeps the first weeks of a season
 ## 4. PPoints
 
 PPoints is a résumé metric, not a predictor. For every game the opponent's rank is blended
-between its rank **entering that week** (from weekly snapshots) and its **current** rank,
+between its rank **entering that week** (from weekly snapshots; week 1 uses the preseason
+prior when warm-started, otherwise the current rank) and its **current** rank,
 with weight `weight_current` (default 0.5). The rank maps to tier points
 
 | Opponent rank | 1–10 | 11–25 | 26–40 | 41–60 | 61+ |

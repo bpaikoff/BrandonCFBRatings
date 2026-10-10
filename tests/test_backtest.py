@@ -78,6 +78,8 @@ def test_compare_methods_and_vegas_hook(season):
     assert {"accuracy", "brier", "log_loss", "mae", "rmse", "ats_accuracy", "vegas_mae"} <= set(table.columns)
     oracle = table[table["method"] == "vegas (closing line)"].iloc[0]
     assert oracle["mae"] < table.iloc[0]["mae"]  # the oracle line knows the true strengths
+    assert pd.isna(oracle["ats_accuracy"])  # the line is never graded against itself
+    assert 0.3 < table.iloc[0]["ats_accuracy"] < 0.7
     assert results["massey"].predictions["vegas_margin"].notna().all()
 
 

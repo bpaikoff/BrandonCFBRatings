@@ -14,6 +14,7 @@ from collections.abc import Mapping, Sequence
 import pandas as pd
 import plotly.graph_objects as go
 
+from ..data.schema import is_pool_team
 from ..models.base import Ratings
 
 CATEGORICAL_LIGHT: tuple[str, ...] = (
@@ -217,7 +218,9 @@ def trajectory_chart(
             if team not in ratings:
                 continue
             if metric == "rank":
-                ordered = sorted(((n, v) for n, v in ratings.items()), key=lambda kv: (-kv[1], kv[0]))
+                ordered = sorted(
+                    ((n, v) for n, v in ratings.items() if not is_pool_team(n)), key=lambda kv: (-kv[1], kv[0])
+                )
                 rank = next(i + 1 for i, (name, _) in enumerate(ordered) if name == team)
                 ys.append(rank)
                 worst_rank = max(worst_rank, rank)

@@ -49,7 +49,10 @@ class RatingResult:
         return {team: i + 1 for i, (team, _) in enumerate(self.ranked())}
 
     def zscores(self) -> Ratings:
-        values = np.array(list(self.ratings.values()), dtype=float)
+        """Standardised ratings; the mean and sd are taken over real teams only."""
+        values = np.array([v for t, v in self.ratings.items() if not is_pool_team(t)], dtype=float)
+        if values.size == 0:
+            values = np.array(list(self.ratings.values()), dtype=float)
         if values.size == 0:
             return {}
         sd = float(values.std())

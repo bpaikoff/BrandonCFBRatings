@@ -101,6 +101,42 @@ def test_warm_start_improves_early_season_predictions(chain):
     assert len(cold) < len(last)
 
 
+def test_season_regress_override_changes_the_prior(chain):
+    games = [g for s in chain for g in s.games]
+    teams = chain[-1].team_names
+    strong = prior_for_season("massey", games, teams, 2026, season_regress=0.0)
+    weak = prior_for_season("massey", games, teams, 2026, season_regress=0.9)
+    assert strong != weak
+    assert np.std(list(weak.values())) < 0.2 * np.std(list(strong.values()))
+    table, _ = compare_methods(teams, games, ["massey"], start_week=1, params={"massey": {"season_regress": 0.0}})
+    table2, _ = compare_methods(teams, games, ["massey"], start_week=1, params={"massey": {"season_regress": 0.9}})
+    assert table.iloc[0]["log_loss"] != table2.iloc[0]["log_loss"]
+
+
+def test_pool_team_takes_no_rank_slot(chain):
+    cur = chain[-1]
+    pooled = [
+        *cur.games,
+        Game(
+            id=999,
+            season=cur.season,
+            week=1,
+            home=cur.team_names[0],
+            away=FCS_POOL,
+            home_points=10,
+            away_points=40,
+            completed=True,
+        ),
+    ]
+    rated = [*cur.team_names, FCS_POOL]
+    model = make_model("colley")
+    res = model.fit(rated, pooled)
+    cal = MarginCalibrator.fit(res, pooled)
+    table = team_table(rated, pooled, res, cal)
+    assert set(table["sos_rank"]) == set(range(1, len(cur.team_names) + 1))
+    assert FCS_POOL not in set(table["team"])
+
+
 def test_compare_methods_reports_seasons(chain):
     games = [g for s in chain[1:] for g in s.games]
     table, results = compare_methods(chain[-1].team_names, games, ["elo"], start_week=2)
@@ -118,7 +154,8 @@ def test_explicit_first_season_prior_and_calibrator_prior(chain):
     cal = MarginCalibrator.fit_cv(model, cur.team_names, cur.games[:40], prior=prior)
     assert cal.sigma > 0 and np.isfinite(cal.slope)
     snaps = weekly_snapshots("elo", cur.team_names, [*prev.games, *cur.games], use_cache=False, prior=prior)
-    assert min(snaps) == 1 and all(abs(v - 1500) < 400 for v in snaps[1].values())
+    assert min(snaps) == 0 and snaps[0] == dict(prior)  # week 0 is the preseason prior
+    assert all(abs(v - 1500) < 400 for v in snaps[1].values())
     assert fit_ratings("elo", cur.team_names, [], prior=prior).ratings == dict(prior)
 
 

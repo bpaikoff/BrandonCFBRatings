@@ -39,7 +39,8 @@ def build_massey(
 
     ``prior_lambda`` is the penalty strength used when a ``prior`` is supplied (a prior
     carries real information, so it deserves more weight than shrinkage toward zero);
-    it defaults to ``ridge_lambda``.
+    ``None`` means "use ``ridge_lambda``". Note that with a prior ``ridge_lambda`` plays no
+    role, so on warm-started data tune ``prior_lambda`` rather than ``ridge_lambda``.
     """
     n = len(teams)
     if n == 0:
@@ -90,7 +91,7 @@ class MasseyModel:
     hfa: float = 2.5
     max_margin: float = 50.0
     half_life_weeks: float = 0.0
-    prior_lambda: float = 3.0
+    prior_lambda: float | None = None  # None → ridge_lambda; Settings default is 3.0
     name: str = "massey"
 
     def fit(self, teams: Sequence[str], games: Sequence[Game], prior: Prior | None = None) -> RatingResult:

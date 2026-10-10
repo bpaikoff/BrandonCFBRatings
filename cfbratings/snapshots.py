@@ -41,7 +41,8 @@ def weekly_snapshots(
     """Return ``{week: ratings}`` for every week of ``season`` with a completed game.
 
     ``games`` may span several seasons; only ``season`` (default: the latest) is
-    snapshotted, warm-started with ``prior`` when one is given.
+    snapshotted, warm-started with ``prior`` when one is given, in which case week 0 holds
+    the preseason ratings implied by the prior alone.
     """
     s = settings or default_settings
     model = make_model(method, s, **overrides)
@@ -64,6 +65,9 @@ def weekly_snapshots(
     # we approximate that by storing the number of games used for each snapshot.
     out: dict[int, Ratings] = {}
     dirty = False
+    if prior:
+        # Week 0: the preseason ratings implied by the prior alone (no games yet).
+        out[0] = model.fit(teams, [], prior=prior).ratings
     for week in range(1, last_week + 1):
         subset = games_through_week(games, week)
         if not subset:

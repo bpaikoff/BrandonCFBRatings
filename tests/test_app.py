@@ -15,5 +15,7 @@ def test_dashboard_runs_in_demo_mode():
     at = AppTest.from_file(str(APP), default_timeout=180)
     at.run()
     assert not at.exception, at.exception
-    assert any("Rankings" in t for t in at.tabs[0].label.split()) or at.tabs
+    labels = [tab.label for tab in at.tabs]
+    assert any("Rankings" in label for label in labels) and any("Projections" in label for label in labels)
     assert at.title[0].value.startswith("College Football Ratings")
+    assert any("warm-started" in c.value for c in at.caption)
