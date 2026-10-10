@@ -10,6 +10,7 @@ import hashlib
 import html
 import json
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,7 +93,31 @@ def kpi_row(items: list[tuple[str, str, str | None]]) -> None:
 
 
 def table_height(n_rows: int, *, cap: int = 900) -> int:
-    return int(min(cap, 36 * (n_rows + 1) + 4))
+    return int(min(cap, 35 * (n_rows + 1) + 3))
+
+
+def percent_cols(df: pd.DataFrame, cols: Sequence[str]) -> pd.DataFrame:
+    """Display copy with 0-1 probabilities scaled to 0-100 so column formats can say ``%.0f%%``."""
+    return df.assign(**{c: df[c] * 100.0 for c in cols if c in df.columns})
+
+
+def pct_bar(label: str, decimals: int = 0, **kw) -> st.column_config.ProgressColumn:
+    return st.column_config.ProgressColumn(label, format=f"%.{decimals}f%%", min_value=0, max_value=100, **kw)
+
+
+def pct_num(label: str, decimals: int = 0, **kw) -> st.column_config.NumberColumn:
+    return st.column_config.NumberColumn(label, format=f"%.{decimals}f%%", **kw)
+
+
+SORT_LABELS = {
+    "rating": "Rating",
+    "ppoints": "PPoints",
+    "sos": "Strength of schedule",
+    "momentum": "Momentum",
+    "wins": "Wins",
+}
+METRIC_LABELS = {"accuracy": "Accuracy", "brier": "Brier", "log_loss": "Log loss", "mae": "MAE (pts)"}
+SEASON_TYPE_LABELS = {"both": "regular + postseason", "regular": "regular season", "postseason": "postseason"}
 
 
 def _team_dict(t: Team) -> dict:
@@ -130,7 +155,10 @@ def load_data(
             f"Synthetic season {span} (seed {seed})",
         )
     teams, games = load_seasons(years, season_type, force_refresh=force_refresh, fcs=fcs)
-    label = f"CollegeFootballData · {span} · {season_type} · FCS {'pooled' if fcs == 'pool' else 'dropped'}"
+    label = (
+        f"CollegeFootballData · {span} · {SEASON_TYPE_LABELS.get(season_type, season_type)} · "
+        f"FCS {'pooled' if fcs == 'pool' else 'dropped'}"
+    )
     return [_team_dict(t) for t in teams], [g.to_dict() for g in games], label
 
 
@@ -331,7 +359,7 @@ with tab_rank:
     c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
     top_n = int(c1.slider("Show top", 10, len(real_names), min(25, len(real_names)), 5))
     conf_filter = c2.selectbox("Conference", ["All", *sorted({conf_map[n] or "Independent" for n in real_names})])
-    sort_by = c3.selectbox("Sort by", ["rating", "ppoints", "sos", "momentum", "wins"])
+    sort_by = c3.selectbox("Sort by", list(SORT_LABELS), format_func=SORT_LABELS.get)
     show_pp = c4.toggle("PPoints", value=True, help="Résumé metric: who you beat and where.")
 
     pp = None
@@ -375,8 +403,8 @@ with tab_rank:
             table,
             top=top_n,
             value_col=value_col,
-            value_label=rating_label if value_col == "rating" else value_col.title(),
-            title=f"Top {len(table)} by {value_col}",
+            value_label=rating_label if value_col == "rating" else SORT_LABELS[value_col],
+            title=f"Top {len(table)} by {SORT_LABELS[value_col].lower()}",
             theme=theme,
         ),
         width="stretch",
@@ -408,7 +436,9 @@ with tab_team:
         )
     kpi_row(tiles)
 
-    compare = st.multiselect("Compare with", [n for n in real_names if n != team], max_selections=7)
+    compare = st.multiselect(
+        "Compare with", [n for n in real_names if n != team], max_selections=7, placeholder="Add up to 7 teams"
+    )
     snaps = snapshots_cached(method, params_json, data_key, names, games, not demo, ws)
     metric_choice = st.radio("Trajectory", ["rank", "rating"], horizontal=True)
     st.plotly_chart(
@@ -416,9 +446,27 @@ with tab_team:
         width="stretch",
     )
 
-    sched = schedule_table(team, games, result, cal)
+    sched = schedule_table(team, games, result, cal).reindex(
+        columns=[
+            "week", "type", "opponent", "opp_rank", "site", "expected_margin", "win_prob",
+            "result", "score", "actual_margin", "vs_expected",
+        ]
+    )  # fmt: skip
+
+    # Unplayed games have no result yet and a pooled FCS opponent has no rank. Streamlit prints
+    # missing numbers as "None", so these columns are pre-formatted as text with blanks instead.
+    def _fmt(col: str, spec: str) -> pd.Series:
+        return sched[col].map(lambda v: "" if pd.isna(v) else spec.format(v))
+
+    sched = sched.assign(
+        result=sched["result"].fillna(""),
+        score=sched["score"].fillna(""),
+        opp_rank=_fmt("opp_rank", "#{:.0f}"),
+        actual_margin=_fmt("actual_margin", "{:+.0f}"),
+        vs_expected=_fmt("vs_expected", "{:+.1f}"),
+    )
     st.dataframe(
-        sched,
+        percent_cols(sched, ["win_prob"]),
         hide_index=True,
         width="stretch",
         height=table_height(len(sched)),
@@ -426,14 +474,14 @@ with tab_team:
             "week": st.column_config.NumberColumn("Wk", width="small"),
             "type": st.column_config.TextColumn("Type", width="small"),
             "opponent": st.column_config.TextColumn("Opponent"),
-            "opp_rank": st.column_config.NumberColumn("Opp #", width="small"),
+            "opp_rank": st.column_config.TextColumn("Opp #", width="small"),
             "site": st.column_config.TextColumn("Site", width="small"),
             "expected_margin": st.column_config.NumberColumn("Expected", format="%+.1f"),
-            "win_prob": st.column_config.ProgressColumn("Win prob", format="percent", min_value=0, max_value=1),
+            "win_prob": pct_bar("Win prob"),
             "result": st.column_config.TextColumn("W/L", width="small"),
             "score": st.column_config.TextColumn("Score", width="small"),
-            "actual_margin": st.column_config.NumberColumn("Actual", format="%+d"),
-            "vs_expected": st.column_config.NumberColumn("vs. exp.", format="%+.1f"),
+            "actual_margin": st.column_config.TextColumn("Actual", width="small"),
+            "vs_expected": st.column_config.TextColumn("vs. exp.", width="small"),
         },
     )
     if proj.remaining:
@@ -469,7 +517,7 @@ with tab_proj:
         proj_df = proj_df[proj_df["conference"] == proj_conf]
     proj_df = proj_df.sort_values(proj_sort, ascending=proj_sort == "rank")
     st.dataframe(
-        proj_df[
+        percent_cols(proj_df, ["p_6_wins", "p_8_wins", "p_10_wins", "p_12_wins", "p_win_out", "next_win_prob"])[
             [
                 "rank",
                 "team",
@@ -497,14 +545,14 @@ with tab_proj:
             "record": st.column_config.TextColumn("Record", width="small"),
             "remaining": st.column_config.NumberColumn("Left", width="small"),
             "proj_record": st.column_config.TextColumn("Projected", help="Expected final wins-losses"),
-            "p_6_wins": st.column_config.ProgressColumn("6+ wins", format="percent", min_value=0, max_value=1),
-            "p_8_wins": st.column_config.ProgressColumn("8+ wins", format="percent", min_value=0, max_value=1),
-            "p_10_wins": st.column_config.ProgressColumn("10+ wins", format="percent", min_value=0, max_value=1),
-            "p_12_wins": st.column_config.ProgressColumn("12+ wins", format="percent", min_value=0, max_value=1),
-            "p_win_out": st.column_config.NumberColumn("Win out", format="percent"),
+            "p_6_wins": pct_bar("6+ wins"),
+            "p_8_wins": pct_bar("8+ wins"),
+            "p_10_wins": pct_bar("10+ wins"),
+            "p_12_wins": pct_bar("12+ wins"),
+            "p_win_out": pct_num("Win out"),
             "next_opponent": "Next opponent",
             "next_site": st.column_config.TextColumn("Site", width="small"),
-            "next_win_prob": st.column_config.NumberColumn("Next win %", format="percent"),
+            "next_win_prob": pct_num("Next win %"),
         },
     )
     st.download_button(
@@ -568,7 +616,7 @@ with tab_match:
         ]
     )
     st.dataframe(
-        df_m,
+        percent_cols(df_m, ["p_home"]),
         hide_index=True,
         width="stretch",
         height=table_height(len(df_m)),
@@ -576,7 +624,7 @@ with tab_match:
             "method": "Method",
             "line": "Line",
             "home_margin": st.column_config.NumberColumn("Home margin", format="%+.1f"),
-            "p_home": st.column_config.ProgressColumn("Home win prob", format="percent", min_value=0, max_value=1),
+            "p_home": pct_bar("Home win prob", decimals=1),
         },
     )
 
@@ -600,14 +648,14 @@ with tab_bt:
         table_bt, detail = backtest_cached(tuple(chosen), start_week, params_json, data_key, names, all_games)
         table_bt = table_bt.assign(method=[MODEL_LABELS.get(m, m) for m in table_bt["method"]])
         st.dataframe(
-            table_bt,
+            percent_cols(table_bt, ["accuracy"]),
             hide_index=True,
             width="stretch",
             height=table_height(len(table_bt)),
             column_config={
                 "method": "Method",
                 "n": st.column_config.NumberColumn("Games", width="small"),
-                "accuracy": st.column_config.NumberColumn("Accuracy", format="percent"),
+                "accuracy": pct_num("Accuracy", decimals=1),
                 "brier": st.column_config.NumberColumn("Brier", format="%.4f"),
                 "log_loss": st.column_config.NumberColumn("Log loss", format="%.4f"),
                 "mae": st.column_config.NumberColumn("MAE (pts)", format="%.2f"),
@@ -616,14 +664,14 @@ with tab_bt:
                 "weeks": "Weeks",
             },
         )
-        metric = st.selectbox("Weekly metric", ["accuracy", "brier", "log_loss", "mae"], index=0)
+        metric = st.selectbox("Weekly metric", list(METRIC_LABELS), index=0, format_func=METRIC_LABELS.get)
         wl, wr = st.columns(2)
         with wl:
             st.plotly_chart(
                 weekly_metric_chart(
                     {MODEL_LABELS[m]: d[1] for m, d in detail.items()},
                     metric=metric,
-                    title=f"{metric} by week",
+                    title=f"{METRIC_LABELS[metric]} by week",
                     theme=theme,
                 ),
                 width="stretch",
