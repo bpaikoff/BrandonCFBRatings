@@ -48,7 +48,7 @@ include = ["cfbratings*"]
 [tool.ruff]
 line-length = 120
 target-version = "py311"
-extend-exclude = ["data"]
+extend-exclude = ["/data"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "C4", "PIE"]

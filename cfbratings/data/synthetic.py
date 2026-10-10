@@ -123,7 +123,7 @@ def synthetic_season(
         nonlocal gid
         gid += 1
         expected = strength[home] - strength[away] + (0.0 if neutral else hfa)
-        margin = int(round(expected + rng.normal(0.0, noise_sd)))
+        margin = round(float(expected + rng.normal(0.0, noise_sd)))
         if margin == 0:
             margin = int(rng.choice([-1, 1]))
         base = int(rng.integers(10, 35))
