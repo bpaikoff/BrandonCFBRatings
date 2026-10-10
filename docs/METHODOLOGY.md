@@ -47,7 +47,10 @@ E_{\text{home}} = \frac{1}{1 + 10^{(R_{\text{away}} - R_{\text{home}} - H\,\math
 $$
 
 $$
-\text{mult} = \ln(|m_g| + 1)\,\frac{2.2}{0.001\,\Delta_{\text{winner}} + 2.2}, \qquad
+\text{mult} = \ln(|m_g| + 1)\,\frac{2.2}{0.001\,\Delta_{\text{winner}} + 2.2},
+$$
+
+$$
 \Delta R_{\text{home}} = K \cdot \text{mult} \cdot (S_{\text{home}} - E_{\text{home}}),
 $$
 

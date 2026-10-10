@@ -5,6 +5,8 @@ Every figure here is built from a hand-made frame; nothing touches the API or th
 
 from __future__ import annotations
 
+import colorsys
+
 import pandas as pd
 import pytest
 
@@ -16,6 +18,7 @@ from cfbratings.viz import (
     conference_dots,
     contrast_ratio,
     rating_bar,
+    rating_sos_scatter,
     resolve_team_color,
     series_colors,
     trajectory_chart,
@@ -29,15 +32,27 @@ from cfbratings.viz.charts import (
     NEAR_COLOR_DISTANCE,
     color_distance,
     parse_color,
+    relative_luminance,
 )
 
 CRIMSON = "#9e1b32"  # Alabama
 NEAR_CRIMSON = "#a31d35"  # a shade off: indistinguishable as a 2px line
 SCARLET = "#bb0000"  # Ohio State: a different red that still reads the same at line width
 MAIZE = "#ffcb05"  # Michigan: fine on dark, vanishes on light
+NAVY = "#00274c"  # Michigan's primary: vanishes on dark
+INDIANA = "#990000"  # a crimson that just misses the floor on dark; the alt is white
 BLUE = "#2a78d6"
 LIGHT_SURFACE = THEMES["light"]["surface"]
 DARK_SURFACE = THEMES["dark"]["surface"]
+
+
+def _hue(color: str) -> float:
+    r, g, b = (c / 255 for c in parse_color(color))
+    return colorsys.rgb_to_hls(r, g, b)[0]
+
+
+def _luminance(color: str) -> float:
+    return relative_luminance(parse_color(color))
 
 
 def _table() -> pd.DataFrame:
@@ -141,9 +156,63 @@ def test_resolver_light_colour_on_light_theme_falls_back_to_alt():
 
 def test_resolver_dark_colour_on_dark_theme_falls_back():
     assert resolve_team_color("#000000", "#1a1a19", "dark") == series_colors("dark")[0]  # both illegible
-    assert resolve_team_color("#00274c", MAIZE, "dark") == MAIZE  # navy fails, maize is fine on dark
+    assert resolve_team_color("#000000", MAIZE, "dark") == MAIZE  # black has no hue to tint; maize is fine on dark
     assert resolve_team_color("#000000", None, "dark", fallback="#abcdef") == "#abcdef"
     assert resolve_team_color("#000000", None, "dark", fallback="#ABC") == "#aabbcc"
+
+
+def test_resolver_tints_a_crimson_on_dark_instead_of_taking_its_white_alt():
+    out = resolve_team_color(INDIANA, "#ffffff", "dark")
+    assert out not in {"#ffffff", INDIANA}
+    assert contrast_ratio(out, DARK_SURFACE) >= MIN_MARK_CONTRAST
+    assert _luminance(out) > _luminance(INDIANA)  # lighter
+    assert _hue(out) == pytest.approx(_hue(INDIANA), abs=0.01)  # still the same crimson
+    assert color_distance(out, INDIANA) < NEAR_COLOR_DISTANCE  # a step, not a different colour
+    assert out == "#9e0d0d"
+    assert resolve_team_color(INDIANA, None, "dark", fallback=BLUE) == out  # the alt plays no part
+
+
+def test_resolver_tints_navy_on_dark_rather_than_switching_to_maize():
+    out = resolve_team_color(NAVY, MAIZE, "dark")
+    assert out not in {MAIZE, NAVY}
+    assert contrast_ratio(out, DARK_SURFACE) >= MIN_MARK_CONTRAST
+    assert _luminance(out) > _luminance(NAVY)
+    assert _hue(out) == pytest.approx(_hue(NAVY), abs=0.01)  # a lighter navy, not a different hue
+    r, g, b = parse_color(out)
+    assert b > g > r  # still reads blue
+    assert out == "#335270"
+    assert resolve_team_color(out, None, "dark") == out  # idempotent: the app resolves twice
+
+
+def test_resolver_never_tints_a_grey_and_skips_a_white_or_black_alt():
+    # Black and near-black have no hue to keep: they go to the alt or the fallback, never to a grey.
+    assert resolve_team_color("#000000", CRIMSON, "dark") == CRIMSON
+    assert resolve_team_color("#111111", None, "dark") == series_colors("dark")[0]
+    assert resolve_team_color("#231f20", None, "dark", fallback=BLUE) == BLUE  # "rich black"
+    # A white alt is legible on dark but is not a team colour: it is skipped, so the fallback wins.
+    assert resolve_team_color("#000000", "#ffffff", "dark") == series_colors("dark")[0]
+    assert resolve_team_color("#000000", "#f8f8f8", "dark") == series_colors("dark")[0]
+    assert resolve_team_color("#000000", "#ffffff", "dark", fallback=BLUE) == BLUE
+    # A white primary that passes the floor on its own is still used (an explicit accent choice).
+    assert resolve_team_color("#ffffff", None, "dark") == "#ffffff"
+    # A mid grey is a real colour (silver) and is accepted as an alt.
+    assert resolve_team_color("#000000", "#a7a8aa", "dark") == "#a7a8aa"
+
+
+def test_resolver_light_surface_shades_only_a_near_miss():
+    # Maize would need two steps of shade: too far from itself, so it goes to the alt, as before.
+    assert resolve_team_color(MAIZE, BLUE, "light") == BLUE
+    assert resolve_team_color(MAIZE, None, "light") == series_colors("light")[0]
+    # A colour that just misses the light floor is shaded one step and keeps its hue.
+    near_miss = "#ffb000"
+    assert contrast_ratio(near_miss, LIGHT_SURFACE) < MIN_MARK_CONTRAST
+    out = resolve_team_color(near_miss, BLUE, "light")
+    assert out != BLUE and contrast_ratio(out, LIGHT_SURFACE) >= MIN_MARK_CONTRAST
+    assert _luminance(out) < _luminance(near_miss)
+    assert _hue(out) == pytest.approx(_hue(near_miss), abs=0.01)
+    # White and near-white are never shaded into a grey.
+    assert resolve_team_color("#ffffff", None, "light") == series_colors("light")[0]
+    assert resolve_team_color("#f5f5f5", None, "light", fallback=CRIMSON) == CRIMSON
 
 
 def test_resolver_surface_decides_which_way_a_colour_fails():
@@ -216,6 +285,37 @@ def test_rating_bar_existing_keyword_calls_still_work():
     assert fig.layout.title.text == "Top 2 by SOS"
 
 
+def test_rating_bar_dark_tints_dark_team_colours_instead_of_painting_them_white():
+    fig = rating_bar(_table(), top=4, team_colors={"Alabama": INDIANA, "Michigan": NAVY}, theme="dark")
+    bars = _bars(fig)
+    assert bars["1. Alabama"].marker.color == resolve_team_color(INDIANA, "#ffffff", "dark") == "#9e0d0d"
+    assert bars["3. Michigan"].marker.color == "#335270"
+    for bar in bars.values():
+        assert bar.marker.color != "#ffffff"
+        assert contrast_ratio(bar.marker.color, DARK_SURFACE) >= MIN_MARK_CONTRAST
+
+
+def test_rating_bar_hover_names_the_value_column_at_a_fitting_precision():
+    table = _table().assign(ppoints=[104.5, 65.2, 22.1, 30.0], momentum=[14.9, 3.1, -1.3, 0.4])
+    hover = _bars(rating_bar(table, top=4))["1. Alabama"].hovertemplate
+    assert "Rating %{x:.3f}" in hover and "SOS %{customdata[1]:.3f}" in hover
+    assert "customdata[3]" not in hover  # the bars already show the rating
+    bars = _bars(rating_bar(table, top=4, value_col="ppoints", value_label="PPoints"))
+    hover = bars["1. Alabama"].hovertemplate
+    assert "PPoints %{x:.1f}" in hover and "Rating %{x" not in hover
+    assert "Rating %{customdata[3]:.3f}" in hover and bars["1. Alabama"].customdata[0][3] == 0.9
+    assert hover.index("PPoints") < hover.index("Rating") < hover.index("Record")  # the value leads
+    hover = _bars(rating_bar(table, top=4, value_col="momentum"))["1. Alabama"].hovertemplate
+    assert "Momentum %{x:+.1f}" in hover  # no label given: the column name, with the sign the table shows
+    hover = _bars(rating_bar(table, top=4, value_col="sos", value_label="SOS"))["1. Alabama"].hovertemplate
+    assert "SOS %{x:.3f}" in hover and hover.count("SOS") == 1  # not repeated as the schedule line
+    hover = _bars(rating_bar(table, top=4, value_label="Rating (z-score)"))["1. Alabama"].hovertemplate
+    assert "Rating (z-score) %{x:.3f}" in hover
+    hover = _bars(rating_bar(table.assign(elo=[1700.0, 1650.0, 1600.0, 1500.0]), top=4, value_col="elo"))
+    assert "Elo %{x:.1f}" in hover["1. Alabama"].hovertemplate  # unknown point-scale column: one decimal
+    assert all("<extra></extra>" in bar.hovertemplate for bar in hover.values())
+
+
 # --- trajectory_chart -------------------------------------------------------------------------------
 
 
@@ -254,6 +354,58 @@ def test_trajectory_missing_or_illegible_colour_keeps_its_slot():
     assert fig.data[2].line.color == CRIMSON
 
 
+def test_trajectory_x_axis_hugs_the_snapshot_weeks_with_integer_ticks():
+    fig = trajectory_chart(_snapshots(), ["A"])
+    assert list(fig.layout.xaxis.range) == [0.5, 3.5]
+    assert fig.layout.xaxis.dtick == 1 and fig.layout.xaxis.tickformat == "d"
+    with_prior = {0: {"A": 1.0, "B": 0.5, "C": 0.0}, **_snapshots()}  # the preseason prior is week 0
+    fig = trajectory_chart(with_prior, ["A", "B"], metric="rating")
+    assert list(fig.layout.xaxis.range) == [-0.5, 3.5]
+    assert list(fig.data[0].x) == [0, 1, 2, 3]
+    assert trajectory_chart({}, ["A"]).layout.xaxis.range is None  # nothing to frame
+
+
+# --- rating_sos_scatter -----------------------------------------------------------------------------
+
+
+def _labels(fig) -> dict[str, tuple[str, str]]:
+    tr = fig.data[0]
+    return {cd[0]: (text, pos) for cd, text, pos in zip(tr.customdata, tr.text, tr.textposition, strict=True)}
+
+
+def test_scatter_labels_the_top_rows_present_plus_the_schedule_extremes():
+    labels = _labels(rating_sos_scatter(_table(), label_top=2))
+    # Top two by rating alternate above/below; Boise State has the weakest schedule and points inward;
+    # Alabama already carries the strongest-schedule label.
+    assert labels == {
+        "Alabama": ("Alabama", "top center"),
+        "Georgia": ("Georgia", "bottom center"),
+        "Michigan": ("", "top center"),
+        "Boise State": ("Boise State", "middle right"),
+    }
+    assert sum(1 for text, _ in _labels(rating_sos_scatter(_table())).values() if text) == 4  # default top 6
+
+
+def test_scatter_labels_do_not_depend_on_the_global_rank():
+    conference = pd.DataFrame(
+        {
+            "rank": [33, 30, 31, 32],
+            "team": ["W", "X", "Y", "Z"],
+            "rating": [0.1, 0.4, 0.3, 0.2],
+            "record": ["3-9", "7-5", "6-6", "5-7"],
+            "sos": [0.3, 0.2, 0.5, 0.1],
+        },
+        index=[29, 30, 31, 32],  # a filtered frame keeps the full table's index
+    )
+    labels = _labels(rating_sos_scatter(conference, label_top=2))
+    assert labels["X"] == ("X", "top center") and labels["Y"] == ("Y", "bottom center")  # best two present
+    assert labels["Z"] == ("Z", "middle right")  # weakest schedule; the strongest (Y) is already labelled
+    assert labels["W"] == ("", "top center")
+    assert all(text == "" for text, _ in _labels(rating_sos_scatter(conference, label_top=0)).values())
+    assert all(text for text, _ in _labels(rating_sos_scatter(conference, label_top=10)).values())
+    assert list(rating_sos_scatter(conference).data[0].customdata[0]) == ["W", "3-9", 33]  # hover keeps rank
+
+
 # --- weekly_metric_chart ----------------------------------------------------------------------------
 
 
@@ -288,6 +440,14 @@ def test_weekly_metric_colours_follow_method_order():
     fig = weekly_metric_chart(_by_week(), theme="dark")
     assert [tr.line.color for tr in fig.data] == list(CATEGORICAL_DARK[:2])
     assert [tr.name for tr in fig.data] == ["Elo", "Massey"]
+
+
+def test_weekly_metric_x_axis_hugs_the_plotted_weeks():
+    assert list(weekly_metric_chart(_by_week(), min_games=5).layout.xaxis.range) == [1.5, 5.5]
+    assert list(weekly_metric_chart(_by_week(), min_games=0).layout.xaxis.range) == [0.5, 5.5]
+    assert list(weekly_metric_chart(_by_week(), min_games=11).layout.xaxis.range) == [3.5, 5.5]
+    assert weekly_metric_chart(_by_week(), metric="nope").layout.xaxis.range is None
+    assert weekly_metric_chart({}).layout.xaxis.range is None
 
 
 # --- accent -----------------------------------------------------------------------------------------

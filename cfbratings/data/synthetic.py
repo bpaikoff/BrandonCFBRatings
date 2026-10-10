@@ -71,7 +71,9 @@ def synthetic_season(
     """Generate a plausible FBS-like season.
 
     * Teams are split evenly across conferences; conferences have their own strength offset.
-    * Weeks 1-3 are mostly non-conference, later weeks mostly in-conference.
+    * Weeks 1-3 are mostly non-conference, later weeks mostly in-conference. An opponent not yet
+      met this season is preferred, a rematch is hosted by the other side, and no team meets the
+      same opponent in consecutive weeks (it takes a bye instead).
     * ``postseason_games`` bowl games are added on neutral sites after the last week.
     * With ``carry_from`` the same teams return and each strength is ``carry_rho`` times
       last season's plus fresh noise, mimicking year-to-year persistence.
@@ -148,26 +150,40 @@ def synthetic_season(
             }
         )
 
+    last_opponent: dict[str, str] = {}  # whom each team met the week before: no back-to-back rematches
     for week in range(1, weeks + 1):
         pool = [t for t in names if rng.random() > bye_rate]
         rng.shuffle(pool)
         in_conf_rate = 0.25 if week <= 3 else 0.85
         used: set[str] = set()
+        this_week: dict[str, str] = {}
         for home in pool:
             if home in used:
                 continue
             same = [t for t in by_conf[conf_of[home]] if t not in used and t != home and t in pool]
             other = [t for t in pool if t not in used and t != home and conf_of[t] != conf_of[home]]
             prefer_conf = rng.random() < in_conf_rate
-            primary = same if (prefer_conf and same) else (other or same)
-            fresh = [t for t in primary if (home, t) not in played and (t, home) not in played]
-            candidates = fresh or primary  # a rematch beats an unplanned bye
+            groups = (same, other) if (prefer_conf and same) else (other, same)
+            # In order of preference: an opponent never met this season (from the preferred group,
+            # then the other), then a rematch with anyone but last week's opponent, which still beats
+            # an unplanned bye; a back-to-back rematch is never scheduled. The random stream is
+            # consumed exactly as before, so a seed stays fixed.
+            previous = last_opponent.get(home)
+            tiers = (
+                *([t for t in group if (home, t) not in played and (t, home) not in played] for group in groups),
+                *([t for t in group if t != previous] for group in groups),
+            )
+            candidates = next((tier for tier in tiers if tier), [])
             if not candidates:
                 continue
             away = str(rng.choice(candidates))
+            if (home, away) in played:  # a rematch is hosted by the other side
+                home, away = away, home
             used.update({home, away})
             played.add((home, away))
+            this_week[home], this_week[away] = away, home
             add_game(week, home, away, neutral=rng.random() < neutral_rate)
+        last_opponent = this_week
 
     if postseason_games and (played_through is None or played_through >= weeks):
         ordered = sorted(names, key=lambda t: strength[t], reverse=True)

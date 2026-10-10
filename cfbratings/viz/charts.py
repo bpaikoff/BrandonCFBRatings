@@ -7,9 +7,11 @@ uses a single blue ramp, and text never wears a series colour. Every builder tak
 chart is actually drawn on rather than flipped automatically.
 
 Team colours are opt-in. Builders accept a plain ``{team: "#rrggbb"}`` mapping (or a single
-``accent``) and pass every value through :func:`resolve_team_color`, which swaps a colour that
-would vanish against the theme's surface for the team's alternate colour or the default series
-hue, so a maize on a light page or a navy on a dark one never disappears into the background.
+``accent``) and pass every value through :func:`resolve_team_color`, which keeps a colour that
+would vanish against the theme's surface legible: first by tinting or shading it toward the
+surface's opposite while it keeps its hue, then by the team's alternate colour when that is a real
+colour, and last by the default series hue, so a navy on a dark page comes back as a lighter navy
+rather than as the team's white, and a maize on a light page never disappears into the background.
 """
 
 from __future__ import annotations
@@ -82,6 +84,22 @@ PALETTE = {**THEMES["light"], "surface": "rgba(0,0,0,0)", "good": "#0ca30c", "cr
 # Lowest WCAG contrast against the surface at which a team colour is still used for a mark. The
 # light palette's own faintest slot sits at 2.1:1, so this keeps team colours to the same bar.
 MIN_MARK_CONTRAST = 2.0
+# A colour that misses the floor is first nudged toward the surface's opposite, mixed with white on a
+# dark surface or with black on a light one, in ``MIX_STEP`` increments. Contrast is a ratio of
+# luminances and luminance grows roughly with the cube of lightness, so a short tint lifts a navy or
+# a crimson over the floor on a dark page while it still reads as that colour, but the light page's
+# floor sits so far down the scale that a pale colour would have to be shaded into olive or mud to
+# reach it. A tint may therefore go to 30 % white; a shade stops after one step, enough to rescue a
+# colour that just misses, and anything paler goes to the alternate colour instead.
+MIX_STEP = 0.05
+MAX_TINT = 0.30
+MAX_SHADE = 0.10
+# Below this spread between the largest and smallest RGB channel a colour is a grey. A grey that also
+# sits near either end of the scale (white, black and their neighbours) has no hue to keep, so it is
+# never nudged, and it is skipped as an alternate colour: most teams' second colour is one of them.
+ACHROMATIC_SPREAD = 32
+NEAR_WHITE_LUMINANCE = 0.6
+NEAR_BLACK_LUMINANCE = 0.05
 # Below this OKLab distance (x100) two colours read as one hue; the later line is dashed instead.
 NEAR_COLOR_DISTANCE = 15.0
 _DASHES = ("solid", "dash", "dot", "dashdot", "longdash", "longdashdot")
@@ -193,21 +211,66 @@ def color_distance(a: str, b: str) -> float:
     return 100 * math.dist(_oklab(pa), _oklab(pb))
 
 
+def _mix(rgb: RGB, toward: RGB, t: float) -> RGB:
+    """``rgb`` moved the fraction ``t`` of the way to ``toward``: 0 keeps it, 1 is ``toward``."""
+    r, g, b = (round(c + t * (w - c)) for c, w in zip(rgb, toward, strict=True))
+    return (r, g, b)
+
+
+def _near_white_or_black(rgb: RGB) -> bool:
+    """True for a grey near either end of the scale: white, black and their close neighbours."""
+    if max(rgb) - min(rgb) >= ACHROMATIC_SPREAD:
+        return False
+    lum = relative_luminance(rgb)
+    return lum >= NEAR_WHITE_LUMINANCE or lum <= NEAR_BLACK_LUMINANCE
+
+
+def _nudged(rgb: RGB, surface: RGB, *, dark: bool) -> RGB | None:
+    """``rgb`` tinted (dark surface) or shaded (light surface) just enough to clear the floor, or None.
+
+    Mixing toward white or black scales every channel difference alike, so the hue is untouched; the
+    mix stops at :data:`MAX_TINT` or :data:`MAX_SHADE` so the result still reads as the team's colour
+    rather than as a pastel or a mud, and a grey is left alone because it has no hue to keep.
+    """
+    if _near_white_or_black(rgb):
+        return None
+    toward, limit = ((255, 255, 255), MAX_TINT) if dark else ((0, 0, 0), MAX_SHADE)
+    for step in range(1, round(limit / MIX_STEP) + 1):
+        candidate = _mix(rgb, toward, step * MIX_STEP)
+        if _contrast(candidate, surface) >= MIN_MARK_CONTRAST:
+            return candidate
+    return None
+
+
 def resolve_team_color(
     color: str | None, alt_color: str | None = None, theme: str = "light", fallback: str | None = None
 ) -> str:
     """A team colour that stays legible on the theme's chart surface, as lower-case ``#rrggbb``.
 
     ``color`` is used when its WCAG contrast against ``THEMES[theme]["surface"]`` reaches
-    :data:`MIN_MARK_CONTRAST`; otherwise ``alt_color`` gets the same test, then ``fallback`` is
-    taken as-is and, failing that, the theme's first series colour. ``None``, short ``#rgb`` and
-    malformed strings are all accepted: a bad value is skipped, never raised.
+    :data:`MIN_MARK_CONTRAST`. When it misses, the same colour is nudged toward the surface's
+    opposite (tinted with white on a dark surface, shaded with black on a light one) in
+    :data:`MIX_STEP` increments until it clears the floor, within :data:`MAX_TINT` or
+    :data:`MAX_SHADE`, so a navy or a crimson on a dark page comes back as a lighter navy or crimson
+    rather than as the team's white. ``alt_color`` is tried next, but only when it is a real colour:
+    a near-white or near-black alternate is skipped. Then ``fallback`` is taken as-is and, failing
+    that, the theme's first series colour. ``None``, short ``#rgb`` and malformed strings are all
+    accepted: a bad value is skipped, never raised.
     """
-    surface = parse_color(_tokens(theme)["surface"])
-    for candidate in (color, alt_color):
-        rgb = parse_color(candidate)
-        if rgb is not None and surface is not None and _contrast(rgb, surface) >= MIN_MARK_CONTRAST:
+    tokens = _tokens(theme)
+    surface = parse_color(tokens["surface"])
+    if surface is None:  # pragma: no cover - the theme tables are literals
+        return series_colors(theme)[0]
+    rgb = parse_color(color)
+    if rgb is not None:
+        if _contrast(rgb, surface) >= MIN_MARK_CONTRAST:
             return _hex(rgb)
+        nudged = _nudged(rgb, surface, dark=tokens is THEMES["dark"])
+        if nudged is not None:
+            return _hex(nudged)
+    alt = parse_color(alt_color)
+    if alt is not None and not _near_white_or_black(alt) and _contrast(alt, surface) >= MIN_MARK_CONTRAST:
+        return _hex(alt)
     rgb = parse_color(fallback)
     return _hex(rgb) if rgb is not None else series_colors(theme)[0]
 
@@ -260,6 +323,19 @@ def _layout(
 
 # --- charts ----------------------------------------------------------------------------------------
 
+# d3 number formats for the value a ranked bar carries: rating-scale columns keep three decimals,
+# point-scale ones (PPoints, momentum) one, and momentum keeps its sign as the table shows it.
+_VALUE_FORMATS = {"rating": ".3f", "sos": ".3f", "ppoints": ".1f", "momentum": "+.1f"}
+
+
+def _value_format(value_col: str, values: pd.Series) -> str:
+    """The hover format for ``value_col``; an unknown column gets one decimal past about 10, else three."""
+    fmt = _VALUE_FORMATS.get(value_col.lower())
+    if fmt is None:
+        span = float(values.abs().max()) if len(values) else 0.0
+        fmt = ".1f" if span >= 10 else ".3f"
+    return fmt
+
 
 def rating_bar(
     table: pd.DataFrame,
@@ -276,7 +352,9 @@ def rating_bar(
 
     Bars are coloured by ``color_col`` (conference) with a legend. With ``team_colors`` (team →
     colour) each bar wears its own team's colour instead, the legend goes away and the hover still
-    names the conference; every colour is re-checked against the theme surface first.
+    names the conference; every colour is re-checked against the theme surface first. The hover
+    names the value the bars show by ``value_label`` (or the column), at a precision that suits it,
+    and adds the rating line when the bars show something else.
     """
     df = table.sort_values(value_col, ascending=False).head(top).copy()
     counts = table[color_col].value_counts().to_dict() if color_col in table else {}
@@ -284,6 +362,15 @@ def rating_bar(
     t = _tokens(theme)
     default = series_colors(theme)[0]
     df["label"] = [f"{r}. {name}" for r, name in zip(df["rank"], df["team"], strict=True)]
+    label = value_label or value_col.replace("_", " ").title()
+    lines = ["<b>%{y}</b>", f"{label} %{{x:{_value_format(value_col, df[value_col])}}}"]
+    if value_col != "rating" and "rating" in df:
+        lines.append("Rating %{customdata[3]:.3f}")
+    lines.append("Record %{customdata[0]}")
+    if value_col != "sos":
+        lines.append("SOS %{customdata[1]:.3f}")
+    lines.append("%{customdata[2]}")
+    hover = "<br>".join(lines) + "<extra></extra>"
     fig = go.Figure()
     if team_colors is None:
         seen: set[str] = set()
@@ -309,28 +396,39 @@ def rating_bar(
             marker={"color": color, "cornerradius": 4},
             showlegend=False,
             legendgroup=name,
-            customdata=[[row.get("record", ""), row.get("sos", float("nan")), cat]],
-            hovertemplate=(
-                "<b>%{y}</b><br>Rating %{x:.3f}<br>Record %{customdata[0]}"
-                "<br>SOS %{customdata[1]:.3f}<br>%{customdata[2]}<extra></extra>"
-            ),
+            customdata=[[row.get("record", ""), row.get("sos", float("nan")), cat, row.get("rating", float("nan"))]],
+            hovertemplate=hover,
         )
     fig.update_layout(barmode="overlay", bargap=0.25)
     fig.update_yaxes(type="category", tickfont={"size": 12})
-    fig.update_xaxes(title_text=value_label or value_col.replace("_", " ").title())
+    fig.update_xaxes(title_text=label)
     return _layout(fig, title=title, height=max(420, 24 * len(df) + 140), legend=team_colors is None, theme=theme)
 
 
 def rating_sos_scatter(
     table: pd.DataFrame, *, label_top: int = 6, title: str | None = None, theme: str = "light"
 ) -> go.Figure:
-    """Rating vs strength of schedule; only the top teams are labelled, alternating above/below."""
-    df = table.copy()
+    """Rating vs strength of schedule, with selective labels.
+
+    The ``label_top`` highest-rated rows *of the frame as given* are labelled, alternating above and
+    below their marks, plus the rows with the weakest and the strongest schedule, whose labels point
+    inward from the edges. Labels never depend on a global rank, so a conference view keeps them.
+    """
+    df = table.reset_index(drop=True)
     t = _tokens(theme)
-    labels, positions = [], []
-    for team, r in zip(df["team"], df["rank"], strict=True):
-        labels.append(team if r <= label_top else "")
-        positions.append("top center" if r % 2 else "bottom center")
+    labels = [""] * len(df)
+    positions = ["top center"] * len(df)
+    if label_top > 0 and len(df):
+        best = df["rating"].sort_values(ascending=False).index[:label_top].tolist()
+        for i, idx in enumerate(best):
+            labels[idx] = df.at[idx, "team"]
+            positions[idx] = "top center" if i % 2 == 0 else "bottom center"
+        sos = df["sos"].dropna()
+        if not sos.empty:
+            for idx, position in ((sos.idxmin(), "middle right"), (sos.idxmax(), "middle left")):
+                if not labels[idx]:
+                    labels[idx] = df.at[idx, "team"]
+                    positions[idx] = position
     fig = go.Figure(
         go.Scatter(
             x=df["sos"],
@@ -408,7 +506,9 @@ def trajectory_chart(
             marker={"size": 8, "line": {"width": 2, "color": t["ring"]}},
             hovertemplate=f"<b>{team}</b><br>Week %{{x}}<br>{metric.title()} %{{y}}<extra></extra>",
         )
-    fig.update_xaxes(title_text="Week", dtick=1)
+    fig.update_xaxes(title_text="Week", dtick=1, tickformat="d")
+    if weeks:  # half a week of padding each side; autorange would pad to -1 and 18 at dtick=1
+        fig.update_xaxes(range=[weeks[0] - 0.5, weeks[-1] + 0.5])
     if metric == "rank":
         span = max(worst_rank + 1, 10)
         fig.update_yaxes(title_text="Rank", range=[span + 0.5, 0.5], dtick=1 if span <= 12 else 5)
@@ -435,12 +535,14 @@ def weekly_metric_chart(
     fig = go.Figure()
     t = _tokens(theme)
     label = metric.replace("_", " ")
+    plotted: list[int] = []
     for i, (method, df) in enumerate(list(by_week.items())[:MAX_CATEGORIES]):
         if metric not in df:
             continue
         has_n = "n" in df
         if has_n and min_games > 0:
             df = df[df["n"] >= min_games]
+        plotted.extend(int(w) for w in df["week"].dropna())
         hover = f"<b>{method}</b><br>Week %{{x}}<br>{label} %{{y:.3f}}"
         if has_n:
             hover += "<br>%{customdata} games"
@@ -455,6 +557,8 @@ def weekly_metric_chart(
             hovertemplate=hover + "<extra></extra>",
         )
     fig.update_xaxes(title_text="Week", dtick=1, tickformat="d")
+    if plotted:  # half a week of padding each side instead of autorange's 0...18
+        fig.update_xaxes(range=[min(plotted) - 0.5, max(plotted) + 0.5])
     fig.update_yaxes(title_text=label.title())
     fig.update_layout(hovermode="x unified")
     return _layout(fig, title=title, height=420, theme=theme)

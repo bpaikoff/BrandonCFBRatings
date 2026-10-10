@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import colorsys
 import re
+from collections import Counter
 
 import pytest
 
@@ -226,3 +227,22 @@ def test_synthetic_teams_get_deterministic_brand_colours(season):
         assert all(min(abs(h - hues[0]), 1.0 - abs(h - hues[0])) < 0.03 for h in hues)
     first, second = synthetic_seasons([2024, 2025], n_teams=8, n_conferences=2, weeks=2, postseason_games=0)
     assert [t.color for t in second.teams] == [t.color for t in first.teams]  # a carried roster keeps its colours
+
+
+def test_synthetic_schedule_avoids_rematches_and_stays_deterministic(season):
+    kw = {"n_teams": 32, "n_conferences": 4, "weeks": 12, "postseason_games": 0, "seed": 11}
+    a, b = synthetic_season(**kw), synthetic_season(**kw)
+    assert [(g.home, g.away, g.home_points) for g in a.games] == [(g.home, g.away, g.home_points) for g in b.games]
+    for s in (a, season, synthetic_season()):  # a small season, the shared fixture and the dashboard demo
+        regular = [g for g in s.games if g.season_type == "regular"]
+        opponents: dict[str, dict[int, str]] = {}
+        for g in regular:
+            opponents.setdefault(g.home, {})[g.week] = g.away
+            opponents.setdefault(g.away, {})[g.week] = g.home
+        for weeks in opponents.values():  # never the same opponent in consecutive weeks
+            assert all(weeks.get(w + 1) != opp for w, opp in weeks.items())
+        assert max(Counter((g.home, g.away) for g in regular).values()) == 1  # a rematch swaps the host
+        pairs = Counter(frozenset((g.home, g.away)) for g in regular)
+        assert sum(1 for n in pairs.values() if n > 1) <= len(regular) // 50  # almost every pair meets once
+        weeks_played = max(g.week for g in regular)
+        assert len(regular) >= 0.85 * weeks_played * len(s.teams) / 2  # byes, random or forced, stay rare
