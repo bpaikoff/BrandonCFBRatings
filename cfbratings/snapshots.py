@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .config import Settings
@@ -85,6 +85,12 @@ def weekly_snapshots(
     return out
 
 
+def rank_map(ratings: Mapping[str, float]) -> dict[str, int]:
+    """Rank by team (1 = best) for one snapshot, ties broken by name; pooled pseudo-teams are never ranked."""
+    ordered = sorted(((t, v) for t, v in ratings.items() if not is_pool_team(t)), key=lambda kv: (-kv[1], kv[0]))
+    return {t: i + 1 for i, (t, _) in enumerate(ordered)}
+
+
 def trajectory(snapshots: dict[int, Ratings], team: str) -> list[tuple[int, int, float]]:
     """``(week, rank, rating)`` for one team across snapshots."""
     out = []
@@ -92,7 +98,49 @@ def trajectory(snapshots: dict[int, Ratings], team: str) -> list[tuple[int, int,
         ratings = snapshots[week]
         if team not in ratings:
             continue
-        ordered = sorted(((t, v) for t, v in ratings.items() if not is_pool_team(t)), key=lambda kv: (-kv[1], kv[0]))
-        rank = next(i + 1 for i, (t, _) in enumerate(ordered) if t == team)
-        out.append((week, rank, ratings[team]))
+        out.append((week, rank_map(ratings)[team], ratings[team]))
+    return out
+
+
+RANK_UNCHANGED = "–"  # noqa: RUF001  (an en dash: the dashboard's "no movement" glyph)
+RANK_NEW = "new"
+
+
+def previous_snapshot_week(snapshots: Mapping[int, Ratings], week: int | None = None) -> int | None:
+    """The latest snapshot week strictly before ``week`` (default: before the latest one), or ``None``."""
+    if not snapshots:
+        return None
+    if week is None:
+        week = max(snapshots)
+    earlier = [w for w in snapshots if w < week]
+    return max(earlier) if earlier else None
+
+
+def rank_changes(
+    current: Mapping[str, int], snapshots: Mapping[int, Ratings], *, week: int | None = None
+) -> dict[str, str]:
+    """Rank movement of every team in ``current`` since the snapshot before ``week``.
+
+    ``current`` is rank by team (``RatingResult.rank_map()``); ``week`` is the week those ranks
+    belong to (default: the latest snapshot), so the comparison is against the snapshot just
+    before it -- week 0, the preseason prior, counts. Labels: ``"▲ 3"`` climbed three places,
+    ``"▼ 2"`` dropped two, an en dash (:data:`RANK_UNCHANGED`) unchanged, and ``"new"`` for a
+    team the earlier snapshot did not rank. With no earlier snapshot (preseason, or the first
+    week of a cold start) every team gets the en dash, so the column never raises.
+    """
+    before = previous_snapshot_week(snapshots, week)
+    if before is None:
+        return dict.fromkeys(current, RANK_UNCHANGED)
+    previous = rank_map(snapshots[before])
+    out: dict[str, str] = {}
+    for team, rank in current.items():
+        then = previous.get(team)
+        if then is None:
+            out[team] = RANK_NEW
+        elif then > rank:
+            out[team] = f"▲ {then - rank}"
+        elif then < rank:
+            out[team] = f"▼ {rank - then}"
+        else:
+            out[team] = RANK_UNCHANGED
     return out
