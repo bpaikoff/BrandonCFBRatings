@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Real-data groundwork (no API quota spent)
+- Schema and client checked against the CollegeFootballData OpenAPI spec (API 5.32.1):
+  `/games` and `/lines` accept `seasonType=both`, every field the parsers read is camelCase
+  as expected (`homeTeam`, `homePoints`, `neutralSite`, `completed`, `homeClassification`,
+  …), `/games` has no default `classification` (the full multi-division payload is returned,
+  which the FCS pooling relies on) and `spread` is documented as *home-relative, negative
+  favours home*, which is the convention the Vegas comparison assumes.
+- `CFBDClient` counts every real API request (`CFBDClient.api_calls`, `client.calls`) and the
+  CLI prints `[cfbd] N API call(s) made this run` on stderr, so the free tier's monthly budget
+  is visible. HTTP 429 raises `CFBDQuotaError` immediately (never retried, nothing cached);
+  CFBD configuration/transport errors exit the CLI with a one-line message instead of a
+  traceback.
+- `consensus_spreads` cross-checks each `spread` against `formattedSpread` and warns when a
+  payload contradicts the home-relative sign convention.
+- `tests/fixtures/cfbd_v5_shapes.json` carries every required key of the spec's `Team`,
+  `Game` and `BettingGame` schemas; new tests parse it, pool FCS opponents on it and verify
+  the spread sign. `tests/fixtures/trim_payload.py` trims an archived season into a real
+  fixture offline once one has been fetched.
+
 ## 1.2.0 — 2026-10-10
 
 ### Fixes (from a full-branch code review)

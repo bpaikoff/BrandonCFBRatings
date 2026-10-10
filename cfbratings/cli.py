@@ -25,7 +25,7 @@ from .analytics import conference_table, schedule_table, team_table
 from .backtest import compare_methods, grid_search
 from .config import Settings
 from .config import settings as default_settings
-from .data import CFBDClient, Game, JsonCache, Team, load_seasons, synthetic_seasons
+from .data import CFBDClient, CFBDError, Game, JsonCache, Team, load_seasons, synthetic_seasons
 from .data.schema import conference_map as _conference_map
 from .data.schema import is_pool_team
 from .models import MODEL_LABELS, MODEL_NAMES, make_model
@@ -534,10 +534,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     try:
         return int(args.func(args))
+    except CFBDError as exc:  # missing key, 401, 429 quota: no traceback, just the reason
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     except KeyboardInterrupt:
         return 130
     except BrokenPipeError:  # e.g. piped into `head`
         return 0
+    finally:
+        if CFBDClient.api_calls:  # the free tier has a small monthly budget: make every call visible
+            print(f"[cfbd] {CFBDClient.api_calls} API call(s) made this run", file=sys.stderr)
 
 
 if __name__ == "__main__":  # pragma: no cover

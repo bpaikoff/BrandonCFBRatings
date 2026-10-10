@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .cache import JsonCache
-from .cfbd import CFBDClient, load_season, load_seasons
+from .cfbd import CFBDClient, CFBDError, CFBDQuotaError, load_season, load_seasons
 from .schema import (
     FCS_POOL,
     Game,
@@ -23,6 +23,8 @@ from .synthetic import SyntheticSeason, synthetic_season, synthetic_seasons
 __all__ = [
     "FCS_POOL",
     "CFBDClient",
+    "CFBDError",
+    "CFBDQuotaError",
     "Game",
     "JsonCache",
     "Record",

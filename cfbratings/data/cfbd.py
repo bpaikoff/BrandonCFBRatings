@@ -29,6 +29,10 @@ class CFBDError(RuntimeError):
     """Raised for configuration or transport problems talking to CFBD."""
 
 
+class CFBDQuotaError(CFBDError):
+    """CFBD answered HTTP 429: the call budget is spent (or calls are too fast). Never retried."""
+
+
 class CFBDClient:
     def __init__(
         self,
@@ -41,6 +45,11 @@ class CFBDClient:
             self.settings.cache_dir, self.settings.cache_ttl_hours, archive_dir=self.settings.archive_dir
         )
         self.session = session or requests.Session()
+        self.calls: list[str] = []  # every real API request made through this client
+
+    #: Real API requests made by *all* clients in this process (the free tier has a small
+    #: monthly budget, so the CLI reports this after every run).
+    api_calls: int = 0
 
     # --- transport ----------------------------------------------------------------
     def _get(self, path: str, params: Mapping[str, Any]) -> Any:
@@ -51,10 +60,17 @@ class CFBDClient:
             )
         url = f"{self.settings.base_url.rstrip('/')}/{path.lstrip('/')}"
         headers = {"Authorization": f"Bearer {self.settings.api_key}", "Accept": "application/json"}
-        log.debug("GET %s %s", url, dict(params))
+        CFBDClient.api_calls += 1
+        self.calls.append(f"{path} {dict(params)}")
+        log.info("CFBD API call #%d: GET %s %s", CFBDClient.api_calls, path, dict(params))
         resp = self.session.get(url, params=dict(params), headers=headers, timeout=self.settings.timeout)
         if resp.status_code == 401:
             raise CFBDError("CFBD rejected the API key (HTTP 401).")
+        if resp.status_code == 429:
+            raise CFBDQuotaError(
+                "CFBD returned HTTP 429 (rate limit or monthly quota exhausted). Not retrying; "
+                "cached and archived seasons remain available offline."
+            )
         resp.raise_for_status()
         return resp.json()
 
@@ -97,10 +113,41 @@ class CFBDClient:
         return consensus_spreads(raw)
 
 
+def spread_sign_consistent(spread: float, formatted: str | None, home: str | None, away: str | None) -> bool:
+    """Cross-check a numeric ``spread`` against CFBD's ``formattedSpread`` (``"Ohio State -14.5"``).
+
+    The API documents ``spread`` as *home-relative, negative favours home*, so the team named
+    in the formatted string must be the home team when ``spread < 0`` and the away team when
+    ``spread > 0``. Returns ``True`` when they agree or when the string cannot be parsed
+    (pick'em, unknown team), so the check never discards a usable line.
+    """
+    if not formatted or not home or not away or spread == 0:
+        return True
+    name, _, number = str(formatted).strip().rpartition(" ")
+    try:
+        float(number)
+    except ValueError:
+        return True
+    if name == home:
+        return spread < 0
+    if name == away:
+        return spread > 0
+    return True
+
+
 def consensus_spreads(raw: list[Mapping[str, Any]]) -> dict[int, float]:
+    """Home-relative closing spread per game id (CFBD convention: negative = home favoured).
+
+    Prefers the ``consensus`` provider when present and the mean of all providers otherwise.
+    Rows whose ``formattedSpread`` names the other side as favourite are counted and reported
+    with a warning, as a guard against the sign convention silently changing.
+    """
     out: dict[int, float] = {}
+    mismatches = 0
     for row in raw:
         gid = row.get("id")
+        home = row.get("homeTeam", row.get("home_team"))
+        away = row.get("awayTeam", row.get("away_team"))
         lines = row.get("lines") or []
         spreads: list[float] = []
         preferred: float | None = None
@@ -112,12 +159,20 @@ def consensus_spreads(raw: list[Mapping[str, Any]]) -> dict[int, float]:
                 value = float(spread)
             except (TypeError, ValueError):
                 continue
+            if not spread_sign_consistent(value, line.get("formattedSpread"), home, away):
+                mismatches += 1
             spreads.append(value)
             if preferred is None and str(line.get("provider", "")).lower() == "consensus":
                 preferred = value
         if gid is None or not spreads:
             continue
         out[int(gid)] = preferred if preferred is not None else sum(spreads) / len(spreads)
+    if mismatches:
+        log.warning(
+            "%d betting line(s) name a favourite that contradicts the home-relative sign of `spread`; "
+            "check consensus_spreads() against the current CFBD payload",
+            mismatches,
+        )
     return out
 
 
