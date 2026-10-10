@@ -86,6 +86,8 @@ illustrative only.
 `streamlit run apps/streamlit_app.py` opens a seven-tab app that works in demo mode without a key
 (`make app` pins BLAS to one thread, see below):
 
+![The Rankings tab on the real 2025 season: logos, rank changes since the previous week, and the sidebar's data-freshness line and API-call counter](docs/img/dashboard.png)
+
 * **Rankings** – logos, rank change since the previous week (▲ 3, ▼ 2, new), sortable table with a conference filter, ranked bar chart coloured by team or by conference, rating-vs-SOS scatter, CSV download
 * **Team** – header strip in the team's colours, schedule with expected margin and win probability per game, opponent logos, the next game with its kickoff day and win probability, week-by-week rank trajectory (compare up to eight teams; look-alike colours get dashed lines), projected record and win-total distribution
 * **Projections** – every team's remaining schedule turned into exact win-total odds (bowl eligibility, 10+ wins, win out) with the next opponent

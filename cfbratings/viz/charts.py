@@ -561,7 +561,7 @@ def weekly_metric_chart(
         fig.update_xaxes(range=[min(plotted) - 0.5, max(plotted) + 0.5])
     fig.update_yaxes(title_text=label.title())
     fig.update_layout(hovermode="x unified")
-    return _layout(fig, title=title, height=420, theme=theme)
+    return _layout(fig, title=title, height=460, theme=theme)
 
 
 def calibration_chart(
