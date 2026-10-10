@@ -83,17 +83,20 @@ illustrative only.
 
 ## Dashboard
 
-`streamlit run apps/streamlit_app.py` opens a six-tab app that works in demo mode without a key:
+`streamlit run apps/streamlit_app.py` opens a seven-tab app that works in demo mode without a key
+(`make app` pins BLAS to one thread, see below):
 
-* **Rankings** – sortable table, conference filter, ranked bar chart coloured by conference, rating-vs-SOS scatter, CSV download
-* **Team** – schedule with expected margin and win probability per game, week-by-week rank trajectory, compare up to eight teams, projected record and win-total distribution
+* **Rankings** – logos, rank change since the previous week (▲ 3, ▼ 2, new), sortable table with a conference filter, ranked bar chart coloured by team or by conference, rating-vs-SOS scatter, CSV download
+* **Team** – header strip in the team's colours, schedule with expected margin and win probability per game, opponent logos, the next game with its kickoff day and win probability, week-by-week rank trajectory (compare up to eight teams; look-alike colours get dashed lines), projected record and win-total distribution
 * **Projections** – every team's remaining schedule turned into exact win-total odds (bowl eligibility, 10+ wins, win out) with the next opponent
 * **Conferences** – robust strength index with aggregate records
 * **Matchup** – pick any two teams for every model's spread and win probability plus a consensus line
-* **Backtest** – run the walk-forward evaluation live: metrics table, per-week accuracy, reliability diagram, downloadable predictions
+* **Backtest** – run the walk-forward evaluation live: metrics table, per-week accuracy (weeks with fewer than five games hidden), reliability diagram, by-season tables, downloadable predictions
 * **Methodology** – the formulas, rendered from `docs/METHODOLOGY.md`
 
-Every model hyper-parameter (home-field advantage, Elo K, Massey ridge and recency half-life, hybrid weights, …) is a sidebar slider; results are cached so interaction is instant.
+Every model hyper-parameter (home-field advantage, Elo K, Massey ridge and recency half-life, hybrid weights, …) is a sidebar slider; results are cached so interaction is instant. The sidebar also says where each loaded season comes from (archived, cached N hours ago, or not cached and about to call the API) and how many API calls the session has made, so the free tier's budget is always visible.
+
+The page is pinned to the light theme (`.streamlit/config.toml`) so charts and page always agree; for dark mode launch with `STREAMLIT_THEME_BASE=dark streamlit run apps/streamlit_app.py` and the logos, charts and colours switch with it.
 
 ## How it works
 
@@ -151,6 +154,7 @@ Settings come from environment variables or a `.env` file (see [`.env.example`](
 | `CFB_YEAR` / `CFB_SEASON_TYPE` | current season / `both` | default season |
 | `CFB_CACHE_DIR` / `CFB_CACHE_TTL_HOURS` | `data/cache` / `6` | working JSON cache (finished seasons never expire) |
 | `CFB_ARCHIVE_DIR` | `data/archive` | gzipped payloads of finished seasons, committed to the repo so a fresh clone never re-downloads them |
+| `STREAMLIT_THEME_BASE` | `light` (from `.streamlit/config.toml`) | `dark` switches the dashboard, its logos and charts to the dark theme |
 | `CFB_HFA` | `2.5` | home-field advantage in points (never applied on neutral sites) |
 | `CFB_COLLEY_PRIOR` | `2.0` | Colley pseudo-games |
 | `CFB_MASSEY_LAMBDA` / `CFB_MASSEY_MAX_MARGIN` / `CFB_MASSEY_HALF_LIFE` / `CFB_MASSEY_PRIOR_LAMBDA` | `1.0` / `50` / `0` / `3.0` | Massey ridge, margin cap, recency half-life (weeks), ridge toward a preseason prior |

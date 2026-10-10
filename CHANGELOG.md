@@ -43,7 +43,21 @@
   hides weeks with fewer than `min_games` (default 5) and shows the game count in the hover,
   `win_distribution_chart` and `conference_dots` take an `accent` colour, and tooltips are themed
   so they are no longer white boxes on dark. Contrast of every text token on both themes is tested.
-- Dashboard: see below.
+- Dashboard: team logos in every table (rankings, schedule, projections, next opponent) and a rank
+  change column (▲ / ▼ / – / new versus the previous snapshot week, the preseason prior included);
+  the ranked bar chart colours by team (default) or conference; the Team tab has a header strip in
+  the team's colours, a "Next game" tile with the kickoff day (US Eastern) and win probability,
+  opponent logos, and team-coloured trajectory and win-total charts; Matchup shows both teams as
+  coloured chips; the Backtest weekly chart hides weeks with fewer than five games and the by-season
+  tables are formatted like the headline one; the sidebar reports where each loaded season came from
+  (archived, cached N hours ago, or about to call the API) and the number of API calls made this
+  session; the demo "weeks played" slider reaches 0 for a true preseason. `.streamlit/config.toml`
+  pins the light theme (charts and page always agree; `STREAMLIT_THEME_BASE=dark` for dark mode,
+  with dark logo variants), hides the Deploy toolbar and disables usage stats. Percentages are whole
+  numbers everywhere, selectors show labels instead of column names, unplayed games show blank
+  cells instead of `None`, and the blank strip under every table is gone. New pure helpers:
+  `cfbratings.snapshots.rank_map / previous_snapshot_week / rank_changes` and
+  `cfbratings.analytics.age_label / freshness_label / kickoff_label`, all unit-tested.
 - ruff's `extend-exclude = ["data"]` matched `cfbratings/data` by basename, so that package was
   never linted; the pattern is now anchored to the repository's `data/` directory.
 
