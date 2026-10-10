@@ -15,6 +15,7 @@ def test_dashboard_runs_in_demo_mode():
     at = AppTest.from_file(str(APP), default_timeout=180)
     at.run()
     assert not at.exception, at.exception
+    assert at.sidebar.radio[0].value.startswith("Demo")  # no key in tests, so the dashboard never reaches CFBD
     labels = [tab.label for tab in at.tabs]
     assert any("Rankings" in label for label in labels) and any("Projections" in label for label in labels)
     assert at.title[0].value.startswith("College Football Ratings")

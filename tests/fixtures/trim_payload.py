@@ -2,8 +2,9 @@
 
     python tests/fixtures/trim_payload.py --year 2024 --teams "Ohio State" "Notre Dame" "Oregon"
 
-Writes ``tests/fixtures/games_<year>_sample.json`` with the selected teams' rows from
-``teams_<year>``, ``games_<year>_both`` and ``lines_<year>_both`` exactly as the API returned them.
+Writes ``tests/fixtures/games_<year>_sample.json`` with the selected teams' games and betting
+lines from ``games_<year>_both`` / ``lines_<year>_both`` and the ``teams_<year>`` rows of every
+FBS school involved, exactly as the API returned them.
 """
 
 from __future__ import annotations
@@ -36,9 +37,12 @@ def main() -> int:
     keep = set(args.teams)
     sample_games = [g for g in games if g.get("homeTeam") in keep or g.get("awayTeam") in keep]
     ids = {g["id"] for g in sample_games}
+    # Every FBS school that appears in the kept games gets its roster row, so that the roster-based
+    # FCS pooling in ``load_season`` behaves on the sample exactly as on the full payload.
+    schools = {g[side] for g in sample_games for side in ("homeTeam", "awayTeam")}
     out = {
         "source": f"CollegeFootballData /teams/fbs, /games?seasonType=both, /lines?seasonType=both for {args.year}",
-        "teams": [t for t in teams if t.get("school") in keep],
+        "teams": [t for t in teams if t.get("school") in schools],
         "games": sample_games,
         "lines": [row for row in lines if row.get("id") in ids],
     }

@@ -6,13 +6,19 @@
   are illustrative, not a recorded response. `tests/test_cfbd_payload_shapes.py` checks that the
   parsers consume these shapes, that FCS pooling behaves on them and that `spread` follows the
   documented *home-relative, negative favours home* convention.
-* `games_2024_sample.json` (not yet present) — a real trimmed payload. Once `data/archive/` holds
-  the 2024 season, generate it **offline** with
+* `games_2024_sample.json` — a **real** payload, trimmed offline from `data/archive/` with
 
   ```bash
   python tests/fixtures/trim_payload.py --year 2024 --teams "Ohio State" "Notre Dame" "Oregon" "Texas"
   ```
 
-  which keeps only those teams' games (a few dozen rows), the matching betting lines and the
-  FBS team rows, and strips nothing else, so the fixture stays a faithful sample. No API call
-  is made and no key material is written.
+  It keeps those teams' 58 games exactly as `/games?seasonType=both` returned them (49
+  regular-season rows, both conference title games and all nine of their College Football Playoff
+  games), the 58 matching `/lines` rows and the `/teams/fbs` row of each of the 46 FBS schools
+  involved, so roster-based FCS pooling works on the sample. No API call is made and no key
+  material is written. `tests/test_real_payload_sample.py` pins down what the real data looks
+  like: every bowl and playoff round is `week: 1` of `seasonType: postseason` (renumbered to one
+  effective week after the last regular week), first-round playoff games are on campus and not
+  neutral, the only FCS opponent pools, the four records come out as 14-2, 14-2, 13-1 and 13-3,
+  and the three books (ESPN Bet, DraftKings, Bovada; there is no `consensus` provider) agree on
+  the sign convention.
