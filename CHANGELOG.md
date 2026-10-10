@@ -29,6 +29,24 @@
 - `trim_payload.py` keeps the roster row of every FBS school involved in the sample, so
   roster-based pooling works on it; `data/archive/README.md` lists what is archived.
 
+### Dashboard and data polish
+- `Team` carries `color`, `alt_color`, `logo` and `logo_dark` from the CFBD roster rows (synthetic
+  demo teams get deterministic colours), with `Team.to_dict()` / `Team.from_dict()`,
+  `contrast_color()` and `normalize_hex_color()` helpers in `cfbratings.data`.
+- Cache provenance: `JsonCache.info()` returns a `CacheInfo` (when a payload was fetched, whether it
+  is final, and whether the working cache or the committed archive would serve it);
+  `CFBDClient.freshness(year)` exposes it per season, and `cfbratings cache list` now prints the age
+  of every entry and whether it can expire.
+- Chart builders (`cfbratings.viz`): `rating_bar` and `trajectory_chart` take a team-colour map
+  (`resolve_team_color()` picks the primary or alternate colour that is legible on the theme's
+  surface; look-alike colours on one trajectory chart get dashed lines), `weekly_metric_chart`
+  hides weeks with fewer than `min_games` (default 5) and shows the game count in the hover,
+  `win_distribution_chart` and `conference_dots` take an `accent` colour, and tooltips are themed
+  so they are no longer white boxes on dark. Contrast of every text token on both themes is tested.
+- Dashboard: see below.
+- ruff's `extend-exclude = ["data"]` matched `cfbratings/data` by basename, so that package was
+  never linted; the pattern is now anchored to the repository's `data/` directory.
+
 ### Fixes
 - **The test-suite made real API calls** whenever a `CFBD_API_KEY` was present: the dashboard smoke
   test picked the live source and fetched the current and previous seasons (four calls per run).

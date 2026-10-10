@@ -399,9 +399,33 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
     return 0
 
 
+def _age_label(seconds: float) -> str:
+    if seconds < 60:
+        return "<1 min"
+    if seconds < 3600:
+        return f"{seconds / 60:.0f} min"
+    if seconds < 86400:
+        return f"{seconds / 3600:.1f} h"
+    return f"{seconds / 86400:.1f} d"
+
+
+def cache_entry_note(cache: JsonCache, key: str, ttl_hours: float) -> str:
+    """One-line provenance for ``cfbratings cache list``: age, and whether the entry can expire."""
+    info = cache.info(key, ignore_ttl=True)
+    if info is None:
+        return "unreadable"
+    age = _age_label(info.age_seconds)
+    if info.final:
+        return f"final season, written {age} ago, never expires"
+    if info.age_seconds > ttl_hours * 3600:
+        return f"written {age} ago, stale: the next use re-downloads it"
+    left = _age_label(ttl_hours * 3600 - info.age_seconds)
+    return f"written {age} ago, fresh for another {left}"
+
+
 def cmd_cache(args: argparse.Namespace) -> int:
     s = _settings(args)
-    cache = JsonCache(s.cache_dir, archive_dir=s.archive_dir)
+    cache = JsonCache(s.cache_dir, s.cache_ttl_hours, archive_dir=s.archive_dir)
     if args.action == "clear":
         n = cache.clear()
         print(f"removed {n} cached files from {s.cache_dir} (archive in {s.archive_dir} kept)")
@@ -409,7 +433,9 @@ def cmd_cache(args: argparse.Namespace) -> int:
         files = sorted(cache.directory.glob("*.json")) if cache.directory.exists() else []
         print(f"{len(files)} cached files in {s.cache_dir}")
         for p in files:
-            print(f"  {p.name}  ({p.stat().st_size / 1024:.0f} KB)")
+            print(
+                f"  {p.name}  ({p.stat().st_size / 1024:.0f} KB)  {cache_entry_note(cache, p.stem, s.cache_ttl_hours)}"
+            )
         archived = sorted(s.archive_dir.glob("*.json.gz")) if s.archive_dir.exists() else []
         print(f"{len(archived)} archived (committed) payloads in {s.archive_dir}")
         for p in archived:

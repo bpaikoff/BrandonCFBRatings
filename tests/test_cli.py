@@ -66,6 +66,15 @@ def test_project_and_multi_season(capsys):
 def test_cache_commands(capsys, tmp_path):
     code = main(["--cache-dir", str(tmp_path), "cache", "list"])
     assert code == 0 and "0 cached files" in capsys.readouterr().out
+    from cfbratings.data import JsonCache
+
+    JsonCache(tmp_path).put("games_2024_both", [], final=True)
+    JsonCache(tmp_path).put("games_2026_both", [])
+    code = main(["--cache-dir", str(tmp_path), "cache", "list"])
+    out = capsys.readouterr().out
+    assert code == 0 and "2 cached files" in out
+    assert "games_2024_both.json" in out and "never expires" in out
+    assert "games_2026_both.json" in out and "fresh for another" in out
     code = main(["--cache-dir", str(tmp_path), "cache", "clear"])
     assert code == 0
 
