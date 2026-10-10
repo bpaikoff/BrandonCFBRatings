@@ -148,3 +148,12 @@ def test_rating_result_helpers(season):
     assert abs(np.mean(list(z.values()))) < 1e-9
     frame = res.to_frame()
     assert list(frame.columns) == ["rank", "team", "rating"] and len(frame) == len(season.team_names)
+
+
+def test_blas_thread_pool_is_pinned_on_import():
+    """``cfbratings._blas`` runs before numpy loads so every small dense solve stays single-threaded."""
+    import os
+
+    import cfbratings  # noqa: F401
+
+    assert os.environ.get("OPENBLAS_NUM_THREADS") and os.environ.get("OMP_NUM_THREADS")

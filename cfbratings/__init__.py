@@ -14,6 +14,7 @@ from __future__ import annotations
 
 __version__ = "1.2.0"
 
+from . import _blas  # noqa: F401  (must precede the first numpy import: pins BLAS to one thread)
 from .config import Settings, settings
 from .data.schema import Game, Team, completed_games, normalize_games, normalize_teams
 from .models import MODEL_NAMES, fit_ratings, make_model

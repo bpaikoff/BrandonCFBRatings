@@ -23,8 +23,8 @@ demo:           ## rankings on a synthetic season (no API key needed)
 backtest:       ## walk-forward comparison of every method on a synthetic season
 	cfbratings --demo backtest --start-week 4
 
-app:            ## launch the dashboard
-	streamlit run apps/streamlit_app.py
+app:            ## launch the dashboard (BLAS pinned to one thread: see cfbratings/_blas.py)
+	OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 streamlit run apps/streamlit_app.py
 
 clean:
 	rm -rf .pytest_cache .ruff_cache htmlcov .coverage build dist *.egg-info
