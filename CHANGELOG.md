@@ -58,6 +58,17 @@
   cells instead of `None`, and the blank strip under every table is gone. New pure helpers:
   `cfbratings.snapshots.rank_map / previous_snapshot_week / rank_changes` and
   `cfbratings.analytics.age_label / freshness_label / kickoff_label`, all unit-tested.
+- A headless QA pass (light, dark, phone width, demo preseason / mid-season / finished season)
+  drove eleven follow-up fixes: no `None` text anywhere (finished seasons show "Final" instead of
+  next-opponent cells), Matchup chips put the logo on a neutral disc and resolve the fill against
+  the page so dark-coloured teams survive dark mode, Home == Away is refused with a warning,
+  preseason SOS and momentum are blank instead of ranked zeros, the ranked bar chart's hover and
+  title follow the sort column, week axes run from the first to the last week with integer ticks,
+  dark-mode team colours are tinted toward legibility instead of falling back to white, the
+  rating-vs-SOS scatter labels the rows it is given (so filtered views keep labels), the
+  out-of-sample predictions expander is a curated, formatted view, the Elo formulas in
+  METHODOLOGY.md no longer clip at phone width, and the synthetic schedule never books the same
+  opponent in consecutive weeks.
 - ruff's `extend-exclude = ["data"]` matched `cfbratings/data` by basename, so that package was
   never linted; the pattern is now anchored to the repository's `data/` directory.
 
