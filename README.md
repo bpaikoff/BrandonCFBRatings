@@ -13,7 +13,7 @@ system actually predicts games?**
 | | |
 |---|---|
 | **Models** | Colley, Massey (ridge, recency-weighted), Elo (margin-of-victory), Bradley-Terry, Hybrid blend — all warm-startable from the previous season |
-| **Analytics** | strength of schedule, momentum in points, conference strength index, PPoints résumé score, weekly rank trajectories |
+| **Analytics** | strength of schedule, momentum in points, conference strength index, PPoints résumé score, weekly rank trajectories, exact rest-of-season record projections |
 | **Backtesting** | out-of-sample walk-forward evaluation across one or many seasons: accuracy, Brier, log loss, MAE/RMSE, calibration, home-team baseline, Vegas closing-line comparison, grid-search tuning |
 | **Interfaces** | `cfbratings` CLI with CSV/JSON export · Streamlit dashboard · importable Python package |
 | **Data** | [CollegeFootballData.com](https://collegefootballdata.com) API with a TTL JSON cache (FCS opponents pooled, not dropped), or a synthetic multi-season generator for offline use |
@@ -44,12 +44,13 @@ streamlit run apps/streamlit_app.py
 | `cfbratings team "Ohio State"` | one team's schedule with expected vs. actual margins and its week-by-week rank |
 | `cfbratings conferences` | conference strength index |
 | `cfbratings predict "Ohio State" "Michigan" [--neutral]` | spread and win probability from every model |
+| `cfbratings project` | rest-of-season projections: projected record, P(6+/10+ wins), P(win out), next opponent |
 | `cfbratings backtest` | walk-forward comparison of all methods (`--methods`, `--start-week`, `--by-week`, `--calibration`, `--lines` for a Vegas comparison, `--predictions-csv`) |
 | `cfbratings tune --method elo --grid "k=15,25,40;hfa=2,2.5,3"` | grid search hyper-parameters against any backtest metric |
 | `cfbratings snapshot` | compute and cache weekly rating snapshots |
 | `cfbratings cache list\|clear` | inspect the JSON cache |
 
-Global flags: `--year`, `--years 2022-2024`, `--warmup-years N` (load N earlier seasons and seed the ratings from them), `--fcs {pool,drop}`, `--season-type {regular,postseason,both}`, `--demo`, `--refresh`, `--cache-dir`, `--param KEY=VALUE` (per-model overrides such as `--param k=30`).
+Global flags: `--year`, `--years 2022-2024`, `--warmup-years N` (load N earlier seasons and seed the ratings from them), `--fcs {pool,drop}`, `--season-type {regular,postseason,both}`, `--demo`, `--demo-weeks N` (mid-season demo), `--refresh`, `--cache-dir`, `--param KEY=VALUE` (per-model overrides such as `--param k=30`).
 
 Example (synthetic season, so the numbers are illustrative):
 
@@ -80,7 +81,8 @@ home_prior (baseline) 301    0.5515 0.2476    0.6883 16.4269 20.2327  4-14
 `streamlit run apps/streamlit_app.py` opens a six-tab app that works in demo mode without a key:
 
 * **Rankings** – sortable table, conference filter, ranked bar chart coloured by conference, rating-vs-SOS scatter, CSV download
-* **Team** – schedule with expected margin and win probability per game, week-by-week rank trajectory, compare up to eight teams
+* **Team** – schedule with expected margin and win probability per game, week-by-week rank trajectory, compare up to eight teams, projected record and win-total distribution
+* **Projections** – every team's remaining schedule turned into exact win-total odds (bowl eligibility, 10+ wins, win out) with the next opponent
 * **Conferences** – robust strength index with aggregate records
 * **Matchup** – pick any two teams for every model's spread and win probability plus a consensus line
 * **Backtest** – run the walk-forward evaluation live: metrics table, per-week accuracy, reliability diagram, downloadable predictions
@@ -105,6 +107,8 @@ Full derivations live in [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md). In brief:
 **Warm starts.** Every model accepts a prior: last season's final ratings regressed a third of the way to the mean (`CFB_SEASON_REGRESS`). Colley plays its pseudo-games at the prior, Massey shrinks toward it, Elo starts from it, Bradley-Terry penalises distance from it. Load earlier seasons with `--warmup-years` (CLI) or the sidebar control (dashboard) and September ratings stop being coin flips.
 
 **FCS games.** Opponents outside FBS are pooled into one pseudo-team that is rated but never ranked, so a loss to an FCS program costs what it should instead of vanishing from the data (`--fcs drop` restores the old behaviour).
+
+**Projections.** Each unplayed game gets a calibrated win probability; the remaining-wins distribution is the exact Poisson-binomial sum, so "P(10+ wins)" is computed, not simulated.
 
 **PPoints** is a committee-style résumé score: wins earn tier points by the opponent's rank (blended between its rank *entering that week* and its rank *now*), multiplied by a road/neutral bonus and the opponent's conference strength; losses cost `4 ÷ tier`, so losing to #3 barely stings while losing to #90 costs four points. Non-conference games earn a bonus and a softer loss penalty.
 
@@ -159,6 +163,7 @@ cfbratings/
   models/            colley, massey, elo, bradley_terry, hybrid + registry
   predict.py         MarginCalibrator: ratings → spreads & win probabilities
   priors.py          preseason priors / warm starts chained across seasons
+  projections.py     exact rest-of-season win-total distributions
   analytics.py       records, SOS, momentum, conference strength, team/schedule tables
   ppoints.py         PPoints résumé metric
   snapshots.py       weekly rating snapshots (cached)
@@ -175,7 +180,7 @@ tests/                 pytest suite (models, calibration, analytics, backtest, C
 ```bash
 make install     # pip install -e ".[dev]"
 make lint        # ruff check + format check
-make test        # pytest (~70 tests, ~1 min incl. dashboard smoke test)
+make test        # pytest (~75 tests, ~1 min incl. dashboard smoke test)
 make test-fast   # skip the dashboard smoke test
 make app         # streamlit run apps/streamlit_app.py
 ```
@@ -185,7 +190,7 @@ CI runs lint and the test-suite on Python 3.11–3.13 for every push and pull re
 ## Roadmap
 
 * Preseason priors that also use returning production / recruiting, not just last season
-* Playoff-probability simulation from calibrated win probabilities
+* Conference-title and playoff odds on top of the projections (needs tiebreak and selection rules)
 * Offense / defense split ratings (Massey decomposition)
 
 ## Acknowledgements

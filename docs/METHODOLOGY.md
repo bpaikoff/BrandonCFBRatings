@@ -198,3 +198,20 @@ one that approaches the market is excellent.
 
 `grid_search` wraps the engine to tune hyper-parameters (Elo $K$, Massey $\lambda$, HFA,
 hybrid weights, …) against any of the metrics above.
+
+## 6. Rest-of-season projections
+
+Every unplayed game on a team's schedule gets a win probability $p_g$ from the calibrated
+ratings (section 2). With $n$ games left, the number of additional wins $W$ is a sum of
+independent Bernoulli trials -- a Poisson-binomial variable -- whose distribution is
+computed exactly by the recursion
+
+$$
+P_k(w) = P_{k-1}(w)\,(1 - p_k) + P_{k-1}(w - 1)\,p_k, \qquad P_0(0) = 1,
+$$
+
+so quantities such as "probability of reaching 10 wins" or "probability of winning out"
+are exact rather than Monte Carlo estimates. The projected record is
+$(\text{wins} + \sum_g p_g,\ \text{losses} + n - \sum_g p_g)$. Games are treated as
+independent given the ratings; correlation through shared uncertainty in the ratings
+themselves is ignored, which makes the tails slightly too narrow late in the season.

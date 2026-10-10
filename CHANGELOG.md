@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.2.0 — 2026-10-10
+
+### Features
+- **Rest-of-season projections** (`cfbratings.projections`): exact Poisson-binomial win
+  distributions for every team's remaining schedule — projected record, P(6+/8+/10+/12+
+  wins), P(win out), next opponent and win probability. New `cfbratings project` command
+  and a 🔭 Projections tab; the Team tab shows a projected record and win-total chart.
+- Synthetic seasons can be partially played (`played_through`, `--demo-weeks`, dashboard
+  "weeks played" slider) so projections are demonstrable offline.
+
+### Dashboard UX
+- Responsive stat tiles replace `st.metric` (no more truncated "Prairie W…" at laptop width).
+- Sidebar reorganised: data source, season and rating method first; data options and
+  model parameters in collapsed sections; demo-only controls hidden outside demo mode.
+- Tables size to their rows (the full top-25 is visible without scrolling); the rating
+  column names its units (points / Elo / z-score / 0-1 / log-odds).
+- Trajectory chart keeps a sensible rank axis even for a team that never moves; single
+  series charts drop the redundant legend; scatter labels no longer collide.
+- Conference strength is a dot plot on its 0.6-1.6 band instead of bars from zero, and the
+  tab no longer squeezes the table.
+- Charts pick ink, grid and series colours for the active light/dark theme.
+
 ## 1.1.0 — 2026-10-10
 
 ### Formulas

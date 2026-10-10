@@ -47,6 +47,22 @@ def test_other_commands(capsys):
     assert code == 0 and "weekly snapshots" in out
 
 
+def test_project_and_multi_season(capsys):
+    code = main(
+        ["--demo", "--seed", "3", "--year", "2025", "--demo-weeks", "9", "project", "--method", "massey", "--top", "5"]
+    )
+    out = capsys.readouterr().out
+    assert code == 0 and "unplayed games" in out and "proj_record" in out and "0 unplayed" not in out
+    code = main(["--demo", "--seed", "3", "--years", "2024-2025", "backtest", "--methods", "elo", "--start-week", "1"])
+    out = capsys.readouterr().out
+    assert code == 0 and "warm-started" in out and "by season" in out
+    code = main(
+        ["--demo", "--seed", "3", "--year", "2025", "--warmup-years", "1", "rank", "--top", "3", "--no-ppoints"]
+    )
+    out = capsys.readouterr().out
+    assert code == 0 and "warm-started from 1 prior season" in out
+
+
 def test_cache_commands(capsys, tmp_path):
     code = main(["--cache-dir", str(tmp_path), "cache", "list"])
     assert code == 0 and "0 cached files" in capsys.readouterr().out

@@ -32,6 +32,7 @@ from .models import MODEL_LABELS, MODEL_NAMES, make_model
 from .ppoints import ppoints as _ppoints
 from .predict import MarginCalibrator
 from .priors import WarmStart, warm_start
+from .projections import projection_table
 from .snapshots import trajectory, weekly_snapshots
 
 log = logging.getLogger("cfbratings")
@@ -126,7 +127,7 @@ def load_data(args: argparse.Namespace, s: Settings) -> tuple[list[Team], list[G
     years = requested_years(args)
     span = f"{years[0]}-{years[-1]}" if len(years) > 1 else str(years[0])
     if args.demo:
-        chain = synthetic_seasons(years, seed=args.seed)
+        chain = synthetic_seasons(years, seed=args.seed, played_through_last=args.demo_weeks or None)
         games = [g for season in chain for g in season.games]
         return chain[-1].teams, games, f"synthetic season{'s' if len(years) > 1 else ''} {span} (seed {args.seed})"
     client = CFBDClient(s)
@@ -287,6 +288,41 @@ def cmd_predict(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_project(args: argparse.Namespace) -> int:
+    s = _settings(args)
+    teams, games, source = load_data(args, s)
+    names = [t.school for t in teams]
+    conf_map = _conference_map(teams)
+    params = parse_params(args.param)
+    season, games, ws, note = season_view(s, teams, games, args.method, params)
+    model = make_model(args.method, s, **params)
+    result = model.fit(names, games, prior=ws.prior)
+    cal = MarginCalibrator.fit_cv(
+        model, names, games, fallback_hfa=s.home_field_adv, prior=ws.prior, fallback=ws.calibrator
+    )
+    df = projection_table(names, games, result, cal, conference_map=conf_map)
+    n_remaining = sum(1 for g in games if not g.has_score)
+    print(f"\nRest-of-season projections — {MODEL_LABELS.get(args.method, args.method)} — {season} — {source} — {note}")
+    print(f"{n_remaining} unplayed games on the schedule\n")
+    if args.conference:
+        df = df[df["conference"].str.lower() == args.conference.lower()]
+    cols = [
+        "rank",
+        "team",
+        "record",
+        "remaining",
+        "proj_record",
+        "p_6_wins",
+        "p_10_wins",
+        "p_win_out",
+        "next_opponent",
+        "next_win_prob",
+    ]
+    _print_df(df[cols].head(args.top))
+    _export(df, args.csv, args.json)
+    return 0
+
+
 def cmd_backtest(args: argparse.Namespace) -> int:
     s = _settings(args)
     teams, games, source = load_data(args, s)
@@ -402,6 +438,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--demo", action="store_true", help="use a synthetic season instead of CFBD (no API key needed)"
     )
     parser.add_argument("--seed", type=int, default=7, help="seed for --demo data")
+    parser.add_argument(
+        "--demo-weeks", type=int, default=0, metavar="N", help="with --demo: only the first N weeks are played"
+    )
     parser.add_argument("--refresh", action="store_true", help="bypass the JSON cache")
     parser.add_argument("--cache-dir", help="override the cache directory")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -436,6 +475,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("team")
     add_model_args(p)
     p.set_defaults(func=cmd_team)
+
+    p = sub.add_parser("project", help="rest-of-season record projections (exact win-total distributions)")
+    add_model_args(p)
+    p.add_argument("--top", type=int, default=25)
+    p.add_argument("--conference", help="only show one conference")
+    add_export_args(p)
+    p.set_defaults(func=cmd_project)
 
     p = sub.add_parser("predict", help="spread and win probability for a matchup")
     p.add_argument("home")
