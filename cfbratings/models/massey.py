@@ -1,68 +1,121 @@
+"""Massey least-squares ratings.
+
+Each game contributes one equation ``r_home - r_away = margin - HFA`` (the HFA term is
+dropped on neutral sites). The system is solved by weighted ridge regression::
+
+    (Aᵀ W A + λ I) r = Aᵀ W y
+
+Because every row of ``A`` sums to zero, the ridge solution is automatically centred
+(mean rating 0) -- no ad-hoc constraint row is needed. With a ``prior`` the penalty becomes
+``λ‖r - r0‖²`` so ratings shrink toward last season's (regressed) values instead of toward
+zero. Weights ``W`` implement optional recency decay with a configurable half-life (weeks
+are measured on an absolute timeline, so a game from last season is a year old), and
+``max_margin`` caps blow-outs so that running up the score is not rewarded.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+
 import numpy as np
-from typing import List, Dict
 
-def build_massey(team_list: List[str], games: List[dict], ridge_lambda: float = 0.01, hfa: float = 2.1, max_margin: float = 50.0):
-    """
-    Build Massey rating system matrices.
+from ..data.schema import Game
+from .base import Prior, RatingResult, index_teams, prior_vector, usable_games
 
-    Args:
-        team_list: List of team names
-        games: List of game dictionaries
-        ridge_lambda: Ridge regularization parameter
-        hfa: Home field advantage in points
-        max_margin: Maximum margin to prevent outliers (default 50 points)
+
+def build_massey(
+    teams: Sequence[str],
+    games: Sequence[Game],
+    *,
+    ridge_lambda: float = 0.01,
+    hfa: float = 2.5,
+    max_margin: float = 50.0,
+    half_life_weeks: float = 0.0,
+    prior: Prior | None = None,
+    prior_lambda: float | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the normal equations ``(M, b)`` for the ridge-regularised Massey system.
+
+    ``prior_lambda`` is the penalty strength used when a ``prior`` is supplied (a prior
+    carries real information, so it deserves more weight than shrinkage toward zero);
+    ``None`` means "use ``ridge_lambda``". Note that with a prior ``ridge_lambda`` plays no
+    role, so on warm-started data tune ``prior_lambda`` rather than ``ridge_lambda``.
     """
-    n = len(team_list)
+    n = len(teams)
     if n == 0:
-        return np.array([[]]), np.array([])
+        return np.zeros((0, 0)), np.zeros(0)
+    idx = index_teams(teams)
+    usable = usable_games(games, idx)
+    r0 = prior_vector(teams, prior, 0.0)
+    r0 = r0 - r0.mean()
+    lam = max(prior_lambda if (prior and prior_lambda is not None) else ridge_lambda, 1e-9)
+    if not usable:
+        return np.eye(n) * lam, lam * r0
 
-    team_to_idx = {t: i for i, t in enumerate(team_list)}
-    # Massey: A r = y, where A encodes matchups, y = margin (home - away adjusted)
-    rows = []
-    y = []
-    for g in games:
-        if not g.get("completed", False):
-            continue
-        hp = g.get("homePoints"); ap = g.get("awayPoints")
-        if hp is None or ap is None:
-            continue
-        home = g["homeTeam"]; away = g["awayTeam"]
-        if home not in team_to_idx or away not in team_to_idx:
-            continue
-        i = team_to_idx[home]; j = team_to_idx[away]
-        margin = (hp - ap) - hfa  # subtract home-field advantage
-        # Cap extreme margins to reduce impact of blowouts
-        margin = np.clip(margin, -max_margin, max_margin)
-        row = np.zeros(n); row[i] = 1.0; row[j] = -1.0
-        rows.append(row); y.append(margin)
-    if len(rows) == 0:
-        return np.zeros((n, n)), np.zeros(n)
-
-    A = np.vstack(rows)
-    y = np.array(y)
-
-    # Ridge regularization for stability
-    M = A.T @ A + ridge_lambda * np.eye(n)
-    b = A.T @ y
-
-    # Anchor the mean rating to 0 (or any constant) for identifiability
-    # Replace last equation with sum(r) = 0
-    M[-1, :] = 1.0
-    b[-1] = 0.0
+    latest = max(absolute_week(g) for g in usable)
+    A = np.zeros((len(usable), n))
+    y = np.zeros(len(usable))
+    w = np.ones(len(usable))
+    for k, g in enumerate(usable):
+        A[k, idx[g.home]] = 1.0
+        A[k, idx[g.away]] = -1.0
+        adj = g.margin - (0.0 if g.neutral_site else hfa)
+        y[k] = float(np.clip(adj, -max_margin, max_margin))
+        if half_life_weeks > 0:
+            w[k] = 0.5 ** ((latest - absolute_week(g)) / half_life_weeks)
+    AW = A * w[:, None]
+    M = AW.T @ A + lam * np.eye(n)
+    b = AW.T @ y + lam * r0
     return M, b
 
-def solve_massey(M: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """
-    Solve the Massey matrix equation M·r = b.
-    Returns zero ratings for all teams if matrix is singular.
-    """
-    if len(b) == 0:
-        return np.array([])
 
+def absolute_week(g: Game) -> int:
+    """Week index on a single timeline across seasons (52 weeks per season)."""
+    return g.season * 52 + g.week
+
+
+def solve_massey(M: np.ndarray, b: np.ndarray) -> np.ndarray:
+    if b.size == 0:
+        return np.zeros(0)
     try:
-        return np.linalg.solve(M, b)
+        r = np.linalg.solve(M, b)
     except np.linalg.LinAlgError:
-        # Matrix is singular (e.g., isolated teams or degenerate cases)
-        # Return zero ratings (Massey ratings are centered at 0)
-        n = len(b)
-        return np.zeros(n)
+        r = np.linalg.lstsq(M, b, rcond=None)[0]
+    return r - r.mean()
+
+
+@dataclass
+class MasseyModel:
+    ridge_lambda: float = 0.01
+    hfa: float = 2.5
+    max_margin: float = 50.0
+    half_life_weeks: float = 0.0
+    prior_lambda: float | None = None  # None → ridge_lambda; Settings default is 3.0
+    name: str = "massey"
+
+    def fit(self, teams: Sequence[str], games: Sequence[Game], prior: Prior | None = None) -> RatingResult:
+        M, b = build_massey(
+            teams,
+            games,
+            ridge_lambda=self.ridge_lambda,
+            hfa=self.hfa,
+            max_margin=self.max_margin,
+            half_life_weeks=self.half_life_weeks,
+            prior=prior,
+            prior_lambda=self.prior_lambda,
+        )
+        r = solve_massey(M, b)
+        return RatingResult(
+            method=self.name,
+            ratings={t: float(r[i]) for i, t in enumerate(teams)},
+            scale="points",
+            params={
+                "ridge_lambda": self.ridge_lambda,
+                "hfa": self.hfa,
+                "max_margin": self.max_margin,
+                "half_life_weeks": self.half_life_weeks,
+                "prior_lambda": self.prior_lambda,
+            },
+            extras={"hfa": self.hfa},
+        )

@@ -1,71 +1,80 @@
+"""Colley Matrix method.
+
+Colley (2002) rates teams purely from wins and losses with a Laplace prior::
+
+    (2 + n_i) r_i - sum_{j in opponents(i)} r_j = 1 + (w_i - l_i) / 2
+
+The ``prior_strength`` parameter generalises the ``2`` (two pseudo-games against an
+average team). With a ``prior`` the right-hand side becomes ``prior_strength * r0_i +
+(w_i - l_i)/2``, i.e. the pseudo-games are played at the team's prior rating ``r0_i``
+instead of 0.5 (useful for carrying last season forward). The system is symmetric
+positive-definite; isolated teams simply keep their prior rating.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+
 import numpy as np
-from typing import Dict, List, Tuple
 
-def build_colley(team_list: List[str], games: List[dict], prior_strength: float = 2.0) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Build Colley matrix for ranking teams.
+from ..data.schema import Game
+from .base import Prior, RatingResult, index_teams, prior_vector, usable_games
 
-    Args:
-        team_list: List of team names
-        games: List of game dictionaries
-        prior_strength: Prior strength parameter (default 2.0)
 
-    Returns:
-        Tuple of (C matrix, b vector) for solving C·r = b
-    """
-    n = len(team_list)
+def build_colley(
+    teams: Sequence[str],
+    games: Sequence[Game],
+    prior_strength: float = 2.0,
+    prior: Prior | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return ``(C, b)`` such that ``C r = b`` gives Colley ratings."""
+    n = len(teams)
     if n == 0:
-        return np.array([[]]), np.array([])
-
-    team_to_idx = {t: i for i, t in enumerate(team_list)}
-    wins = np.zeros(n, dtype=float)
-    losses = np.zeros(n, dtype=float)
-    games_played = np.zeros(n, dtype=float)
-    opponent_matrix = np.zeros((n, n), dtype=float)
-
-    for g in games:
-        game = g if isinstance(g, dict) else g
-        if isinstance(games, dict):  # if using cached payload {"data": [...]}
-            game = g
-        if not game.get("completed", False):
-            continue
-        hp = game.get("homePoints")
-        ap = game.get("awayPoints")
-        if hp is None or ap is None:
-            continue
-        home = game["homeTeam"]
-        away = game["awayTeam"]
-        if home not in team_to_idx or away not in team_to_idx:
-            continue
-        i = team_to_idx[home]; j = team_to_idx[away]
-
-        games_played[i] += 1; games_played[j] += 1
-        opponent_matrix[i, j] += 1; opponent_matrix[j, i] += 1
-
-        if hp > ap:
-            wins[i] += 1; losses[j] += 1
-        elif ap > hp:
-            wins[j] += 1; losses[i] += 1
-        else:
-            wins[i] += 0.5; wins[j] += 0.5
-            losses[i] += 0.5; losses[j] += 0.5
-
-    C = np.diag(prior_strength + games_played) - opponent_matrix
-    b = (prior_strength / 2.0) + 0.5 * (wins - losses)
+        return np.zeros((0, 0)), np.zeros(0)
+    idx = index_teams(teams)
+    played = np.zeros(n)
+    net = np.zeros(n)  # wins - losses (ties contribute 0)
+    opp = np.zeros((n, n))
+    for g in usable_games(games, idx):
+        i, j = idx[g.home], idx[g.away]
+        played[i] += 1
+        played[j] += 1
+        opp[i, j] += 1
+        opp[j, i] += 1
+        m = g.margin
+        if m > 0:
+            net[i] += 1
+            net[j] -= 1
+        elif m < 0:
+            net[j] += 1
+            net[i] -= 1
+    C = np.diag(prior_strength + played) - opp
+    b = prior_strength * prior_vector(teams, prior, 0.5) + 0.5 * net
     return C, b
 
-def solve_colley(C: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """
-    Solve the Colley matrix equation C·r = b.
-    Returns default ratings (0.5 for all teams) if matrix is singular.
-    """
-    if len(b) == 0:
-        return np.array([])
 
+def solve_colley(C: np.ndarray, b: np.ndarray) -> np.ndarray:
+    if b.size == 0:
+        return np.zeros(0)
     try:
         return np.linalg.solve(C, b)
     except np.linalg.LinAlgError:
-        # Matrix is singular (e.g., isolated teams or no games)
-        # Return default Colley rating of 0.5 for all teams
-        n = len(b)
-        return np.full(n, 0.5)
+        # Only reachable with prior_strength == 0 and an isolated team; fall back to lstsq.
+        return np.linalg.lstsq(C, b, rcond=None)[0]
+
+
+@dataclass
+class ColleyModel:
+    prior_strength: float = 2.0
+    name: str = "colley"
+
+    def fit(self, teams: Sequence[str], games: Sequence[Game], prior: Prior | None = None) -> RatingResult:
+        C, b = build_colley(teams, games, self.prior_strength, prior=prior)
+        r = solve_colley(C, b)
+        return RatingResult(
+            method=self.name,
+            ratings={t: float(r[i]) for i, t in enumerate(teams)},
+            scale="prob",
+            params={"prior_strength": self.prior_strength},
+        )

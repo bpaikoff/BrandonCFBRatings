@@ -1,35 +1,33 @@
-# Byte-compiled / optimized / DLL files
+# Byte-compiled / optimized
 __pycache__/
 *.py[cod]
 *$py.class
 
-# Virtual environments
+# Virtual environments & secrets
 .env
 .venv/
 venv/
 ENV/
 
-# Environment variables
-*.env
-
-# Cache & data
+# Working cache of API data and snapshots (the gzipped archive in data/archive IS committed)
 data/cache/
-*.json
 
-# Distribution / packaging
-.Python
+# Packaging
 build/
-develop-eggs/
 dist/
-eggs/
 *.egg-info/
-.installed.cfg
-*.egg
+.eggs/
 
-# Logs
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage*
 *.log
 
-# IDEs
+# IDEs / OS
 .vscode/
 .idea/
 *.swp
+.DS_Store
