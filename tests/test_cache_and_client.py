@@ -26,6 +26,49 @@ def test_cache_round_trip_and_ttl(tmp_path, monkeypatch):
     assert cache.get("final") == [1, 2]
 
 
+def test_archive_tier_survives_cache_clear(tmp_path):
+    cache = JsonCache(tmp_path / "cache", ttl_hours=1.0, archive_dir=tmp_path / "archive")
+    cache.put("games_2023_both", [{"id": 1}], final=True)
+    cache.put("games_2026_both", [{"id": 2}], final=False)
+    assert (tmp_path / "archive" / "games_2023_both.json.gz").exists()
+    assert not (tmp_path / "archive" / "games_2026_both.json.gz").exists()
+    assert cache.clear() == 2
+    assert cache.get("games_2023_both") == [{"id": 1}]  # served from the archive
+    assert cache.get("games_2026_both") is None
+    fresh = JsonCache(tmp_path / "elsewhere", archive_dir=tmp_path / "archive")  # a brand-new clone
+    assert fresh.get("games_2023_both") == [{"id": 1}]
+    assert JsonCache(tmp_path / "nowhere").get("games_2023_both") is None  # no archive configured
+
+
+def test_client_uses_archive_without_calling_api(tmp_path):
+    archive = JsonCache(tmp_path / "cache", archive_dir=tmp_path / "archive")
+    archive.put("teams_2023", [{"school": "A"}, {"school": "B"}], final=True)
+    archive.put(
+        "games_2023_regular",
+        [
+            {
+                "id": 1,
+                "season": 2023,
+                "week": 1,
+                "homeTeam": "A",
+                "awayTeam": "B",
+                "homePoints": 1,
+                "awayPoints": 0,
+                "completed": True,
+            }
+        ],
+        final=True,
+    )
+    archive.clear()
+    session = _FakeSession({})  # any request would KeyError
+    client = CFBDClient(
+        Settings(api_key="secret", cache_dir=tmp_path / "cache", archive_dir=tmp_path / "archive"), session=session
+    )
+    teams, games = load_season(2023, "regular", client=client)
+    assert [t.school for t in teams] == ["A", "B"] and [g.id for g in games] == [1]
+    assert session.calls == []
+
+
 def test_cache_ignores_corrupt_files(tmp_path):
     cache = JsonCache(tmp_path)
     cache.path("bad").parent.mkdir(parents=True, exist_ok=True)
@@ -66,7 +109,7 @@ class _FakeSession:
 
 
 def test_client_requires_api_key(tmp_path):
-    client = CFBDClient(Settings(api_key="", cache_dir=tmp_path))
+    client = CFBDClient(Settings(api_key="", cache_dir=tmp_path / "cache", archive_dir=tmp_path / "archive"))
     with pytest.raises(CFBDError):
         client.teams(2024)
 
@@ -101,7 +144,9 @@ def test_client_caches_and_filters(tmp_path):
         ],
     }
     session = _FakeSession(routes)
-    client = CFBDClient(Settings(api_key="secret", cache_dir=tmp_path), session=session)
+    client = CFBDClient(
+        Settings(api_key="secret", cache_dir=tmp_path / "cache", archive_dir=tmp_path / "archive"), session=session
+    )
     teams, games = load_season(2024, "regular", client=client, fcs="drop")
     assert [t.school for t in teams] == ["A", "B"]
     assert [g.id for g in games] == [1]  # FCS game dropped
@@ -139,7 +184,9 @@ def test_load_seasons_merges_rosters(tmp_path):
         ("/games", 2024): [game(2, 2024, "D", "B")],
     }
     session = _FakeSession(routes)
-    client = CFBDClient(Settings(api_key="secret", cache_dir=tmp_path), session=session)
+    client = CFBDClient(
+        Settings(api_key="secret", cache_dir=tmp_path / "cache", archive_dir=tmp_path / "archive"), session=session
+    )
     teams, games = load_seasons([2024, 2023], "regular", client=client)
     assert [t.school for t in teams] == ["A", "B", "D", "C"]  # latest roster first, earlier-only teams appended
     assert [(g.id, g.season) for g in games] == [(1, 2023), (2, 2024)]

@@ -9,8 +9,8 @@ __pycache__/
 venv/
 ENV/
 
-# Cached API data and snapshots
-data/
+# Working cache of API data and snapshots (the gzipped archive in data/archive IS committed)
+data/cache/
 
 # Packaging
 build/

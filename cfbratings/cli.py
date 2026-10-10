@@ -401,14 +401,18 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
 
 def cmd_cache(args: argparse.Namespace) -> int:
     s = _settings(args)
-    cache = JsonCache(s.cache_dir)
+    cache = JsonCache(s.cache_dir, archive_dir=s.archive_dir)
     if args.action == "clear":
         n = cache.clear()
-        print(f"removed {n} cached files from {s.cache_dir}")
+        print(f"removed {n} cached files from {s.cache_dir} (archive in {s.archive_dir} kept)")
     else:
         files = sorted(cache.directory.glob("*.json")) if cache.directory.exists() else []
         print(f"{len(files)} cached files in {s.cache_dir}")
         for p in files:
+            print(f"  {p.name}  ({p.stat().st_size / 1024:.0f} KB)")
+        archived = sorted(s.archive_dir.glob("*.json.gz")) if s.archive_dir.exists() else []
+        print(f"{len(archived)} archived (committed) payloads in {s.archive_dir}")
+        for p in archived:
             print(f"  {p.name}  ({p.stat().st_size / 1024:.0f} KB)")
     return 0
 

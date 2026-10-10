@@ -16,7 +16,7 @@ system actually predicts games?**
 | **Analytics** | strength of schedule, momentum in points, conference strength index, PPoints résumé score, weekly rank trajectories, exact rest-of-season record projections |
 | **Backtesting** | out-of-sample walk-forward evaluation across one or many seasons: accuracy, Brier, log loss, MAE/RMSE, calibration, home-team baseline, Vegas closing-line comparison, grid-search tuning |
 | **Interfaces** | `cfbratings` CLI with CSV/JSON export · Streamlit dashboard · importable Python package |
-| **Data** | [CollegeFootballData.com](https://collegefootballdata.com) API with a TTL JSON cache (FCS opponents pooled, not dropped), or a synthetic multi-season generator for offline use |
+| **Data** | [CollegeFootballData.com](https://collegefootballdata.com) API behind a two-tier cache (working cache plus a committed archive of finished seasons, so a season costs two or three API calls ever), FCS opponents pooled rather than dropped, or a synthetic multi-season generator for offline use |
 
 ## Quickstart
 
@@ -144,7 +144,8 @@ Settings come from environment variables or a `.env` file (see [`.env.example`](
 |---|---|---|
 | `CFBD_API_KEY` | – | CollegeFootballData API key |
 | `CFB_YEAR` / `CFB_SEASON_TYPE` | current season / `both` | default season |
-| `CFB_CACHE_DIR` / `CFB_CACHE_TTL_HOURS` | `data/cache` / `6` | JSON cache (finished seasons never expire) |
+| `CFB_CACHE_DIR` / `CFB_CACHE_TTL_HOURS` | `data/cache` / `6` | working JSON cache (finished seasons never expire) |
+| `CFB_ARCHIVE_DIR` | `data/archive` | gzipped payloads of finished seasons, committed to the repo so a fresh clone never re-downloads them |
 | `CFB_HFA` | `2.5` | home-field advantage in points (never applied on neutral sites) |
 | `CFB_COLLEY_PRIOR` | `2.0` | Colley pseudo-games |
 | `CFB_MASSEY_LAMBDA` / `CFB_MASSEY_MAX_MARGIN` / `CFB_MASSEY_HALF_LIFE` / `CFB_MASSEY_PRIOR_LAMBDA` | `1.0` / `50` / `0` / `3.0` | Massey ridge, margin cap, recency half-life (weeks), ridge toward a preseason prior |

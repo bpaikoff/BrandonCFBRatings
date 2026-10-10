@@ -17,7 +17,7 @@ def season() -> SyntheticSeason:
 
 @pytest.fixture
 def settings(tmp_path) -> Settings:
-    return Settings(cache_dir=tmp_path / "cache", api_key="")
+    return Settings(cache_dir=tmp_path / "cache", archive_dir=tmp_path / "archive", api_key="")
 
 
 def spearman(a, b) -> float:

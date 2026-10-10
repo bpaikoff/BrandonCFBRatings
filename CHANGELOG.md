@@ -19,6 +19,10 @@
   refresh is picked up, and "Refresh API cache" is a one-shot rather than sticky.
 
 ### Features
+- **Committed archive of finished seasons.** The cache gained a second tier: final payloads
+  are written gzipped to `data/archive/` (tracked in git) and read as a fallback, so a fresh
+  clone never re-downloads a season. `cfbratings cache list` shows both tiers;
+  `cache clear` leaves the archive alone.
 - **Rest-of-season projections** (`cfbratings.projections`): exact Poisson-binomial win
   distributions for every team's remaining schedule — projected record, P(6+/8+/10+/12+
   wins), P(win out), next opponent and win probability. New `cfbratings project` command

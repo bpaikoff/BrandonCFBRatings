@@ -40,6 +40,7 @@ class Settings:
     api_key: str = ""
     base_url: str = "https://api.collegefootballdata.com"
     cache_dir: Path = Path("data/cache")
+    archive_dir: Path = Path("data/archive")  # committed, gzipped payloads of finished seasons
     cache_ttl_hours: float = 6.0
     timeout: int = 20
     year: int = field(default_factory=default_season)
@@ -94,6 +95,7 @@ class Settings:
             api_key=_env("CFBD_API_KEY", ""),
             base_url=_env("CFBD_BASE_URL", base.base_url),
             cache_dir=Path(_env("CFB_CACHE_DIR", str(base.cache_dir))),
+            archive_dir=Path(_env("CFB_ARCHIVE_DIR", str(base.archive_dir))),
             cache_ttl_hours=_env_float("CFB_CACHE_TTL_HOURS", base.cache_ttl_hours),
             timeout=int(_env("CFB_TIMEOUT", str(base.timeout))),
             year=int(_env("CFB_YEAR", str(base.year))),
