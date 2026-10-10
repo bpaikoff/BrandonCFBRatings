@@ -5,6 +5,15 @@ to disk so repeated CLI / dashboard runs do not burn API quota; completed season
 marked final, never expire, and are additionally written gzipped to the committed
 archive directory so that a fresh clone never re-downloads them. A full season costs
 two calls (teams + games), three with betting lines.
+
+Two things a UI should surface:
+
+* ``CFBDClient.api_calls`` -- a class attribute counting the real HTTP requests made by
+  every client in this process. The free tier has a small monthly budget, so display it
+  next to any refresh control (the CLI prints it after every run).
+* ``CFBDClient.freshness(year)`` -- when the season on screen was fetched and whether it
+  would be served from the working cache or the committed archive, for a "data as of"
+  caption. It never makes a request; ``None`` means the next load would.
 """
 
 from __future__ import annotations
@@ -16,13 +25,19 @@ from typing import Any
 
 import requests
 
-from ..config import Settings, settings as default_settings
-from .cache import JsonCache
+from ..config import Settings
+from ..config import settings as default_settings
+from .cache import CacheInfo, JsonCache
 from .schema import FCS_POOL, Game, Team, normalize_games, normalize_teams, pool_non_fbs
 
 log = logging.getLogger(__name__)
 
 SEASON_TYPES = ("regular", "postseason", "both")
+
+
+def _check_season_type(season_type: str) -> None:
+    if season_type not in SEASON_TYPES:
+        raise ValueError(f"season_type must be one of {SEASON_TYPES}, got {season_type!r}")
 
 
 class CFBDError(RuntimeError):
@@ -90,8 +105,7 @@ class CFBDClient:
         return normalize_teams(raw)
 
     def games(self, year: int, season_type: str = "both", *, force_refresh: bool = False) -> list[Game]:
-        if season_type not in SEASON_TYPES:
-            raise ValueError(f"season_type must be one of {SEASON_TYPES}, got {season_type!r}")
+        _check_season_type(season_type)
         key = f"games_{year}_{season_type}"
         raw = None if force_refresh else self.cache.get(key)
         if raw is None:
@@ -111,6 +125,16 @@ class CFBDClient:
             raw = self._get("/lines", {"year": year, "seasonType": season_type})
             self.cache.put(key, raw, final=self._is_final(year))
         return consensus_spreads(raw)
+
+    # --- provenance ---------------------------------------------------------------
+    def freshness(self, year: int, season_type: str = "both") -> CacheInfo | None:
+        """Provenance of the cached ``/games`` payload for a season, without touching the API.
+
+        ``tier`` says whether :meth:`games` would read the working cache or fall back to the
+        committed archive; ``None`` means it would have to make a real request.
+        """
+        _check_season_type(season_type)
+        return self.cache.info(f"games_{year}_{season_type}")
 
 
 def spread_sign_consistent(spread: float, formatted: str | None, home: str | None, away: str | None) -> bool:

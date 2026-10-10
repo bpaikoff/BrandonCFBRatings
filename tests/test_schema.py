@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import colorsys
+import re
+
 import pytest
 
 from cfbratings.data.schema import (
@@ -8,11 +11,14 @@ from cfbratings.data.schema import (
     Record,
     Team,
     completed_games,
+    contrast_color,
     games_through_week,
     max_completed_week,
     normalize_games,
+    normalize_hex_color,
     pool_non_fbs,
 )
+from cfbratings.data.synthetic import synthetic_season, synthetic_seasons
 
 
 def test_from_cfbd_camel_and_snake_case():
@@ -143,3 +149,80 @@ def test_pool_non_fbs_rewrites_opponents_and_keeps_names():
     assert pooled[1].display_name(FCS_POOL) == "Tiny U" and pooled[1].display_name("A") == "A"
     assert pooled[2].home == FCS_POOL and pooled[2].home_display == "Tiny U"
     assert pooled[0].home_name is None
+
+
+# --- team colours and logos ------------------------------------------------------------------
+
+LOGOS = [
+    "https://cdn.collegefootballdata.com/logos/500/333.png",
+    "https://cdn.collegefootballdata.com/logos-dark/500/333.png",
+    "https://cdn.collegefootballdata.com/logos/256/333.png",
+    "https://cdn.collegefootballdata.com/logos-dark/256/333.png",
+]
+HEX = re.compile(r"#[0-9a-f]{6}")
+
+
+def test_team_colours_and_logos_parse_from_cfbd_rows():
+    t = Team.from_cfbd({"school": "Alabama", "color": "#9E1B32", "alternateColor": "FFFFFF", "logos": LOGOS})
+    assert (t.color, t.alt_color) == ("#9e1b32", "#ffffff")  # lower-case, always with the hash
+    assert t.logo == LOGOS[0] and t.logo_dark == LOGOS[1]  # the 500 px light logo and its logos-dark twin
+    light_only = Team.from_cfbd({"school": "B", "logos": [LOGOS[0]]})
+    assert light_only.logo == LOGOS[0] and light_only.logo_dark is None
+    bare = Team.from_cfbd({"school": "C", "color": None, "alternateColor": "not a colour", "logos": None})
+    assert (bare.color, bare.alt_color, bare.logo, bare.logo_dark) == (None, None, None, None)
+    assert Team.from_cfbd({"school": "D"}) == Team(school="D")  # rows without the keys parse as before
+    assert Team(school=FCS_POOL, conference="FCS", classification="fcs").color is None  # the pooled pseudo-team
+
+
+def test_normalize_hex_color_and_contrast():
+    assert normalize_hex_color("#BB0000") == "#bb0000" and normalize_hex_color("bb0000") == "#bb0000"
+    assert normalize_hex_color(" #FfF ") == "#ffffff"  # shorthand expands
+    assert normalize_hex_color(None) is None and normalize_hex_color("") is None
+    assert normalize_hex_color("#12345") is None and normalize_hex_color("red") is None
+    assert contrast_color("#000000") == "#ffffff" and contrast_color("#ffffff") == "#000000"
+    assert contrast_color("#9e1b32") == "#ffffff" and contrast_color("#ffd100") == "#000000"
+    assert contrast_color(None) == "#000000" and contrast_color("nope", dark="#111") == "#111"
+
+
+def test_team_dict_round_trip_and_legacy_dicts():
+    raw = {"school": "Alabama", "conference": "SEC", "color": "#9e1b32", "alternateColor": "#ffffff", "logos": LOGOS}
+    t = Team.from_cfbd(raw)
+    d = t.to_dict()
+    assert set(d) == {
+        "school",
+        "conference",
+        "classification",
+        "abbreviation",
+        "color",
+        "alt_color",
+        "logo",
+        "logo_dark",
+    }
+    assert Team.from_dict(d) == t and Team(**d) == t  # the dashboard rebuilds teams both ways
+    assert Team.from_dict(raw) == t  # a raw CFBD row is accepted too
+    legacy = {"school": "Alabama", "conference": "SEC", "classification": "fbs", "abbreviation": None}
+    assert Team.from_dict(legacy) == Team(school="Alabama", conference="SEC", classification="fbs")  # older caches
+
+
+def _hue(color: str) -> float:
+    r, g, b = (int(color[i : i + 2], 16) / 255.0 for i in (1, 3, 5))
+    return colorsys.rgb_to_hls(r, g, b)[0]
+
+
+def test_synthetic_teams_get_deterministic_brand_colours(season):
+    kw = {"n_teams": 24, "n_conferences": 4, "weeks": 3, "postseason_games": 0}
+    a, b = synthetic_season(seed=3, **kw), synthetic_season(seed=3, **kw)
+    assert [(t.color, t.alt_color) for t in a.teams] == [(t.color, t.alt_color) for t in b.teams]
+    for t in a.teams:
+        assert HEX.fullmatch(t.color) and t.alt_color in {"#ffffff", "#000000"}
+        assert t.alt_color == contrast_color(t.color) and t.logo is None and t.logo_dark is None
+    assert len({t.color for t in a.teams}) == 24 and len({t.color for t in season.teams}) == len(season.teams)
+    by_conf: dict[str, list[str]] = {}
+    for t in a.teams:
+        by_conf.setdefault(t.conference, []).append(t.color)
+    assert len(by_conf) == 4 and all(len(colours) == 6 for colours in by_conf.values())
+    for colours in by_conf.values():  # one hue family per conference, different shades per team
+        hues = [_hue(c) for c in colours]
+        assert all(min(abs(h - hues[0]), 1.0 - abs(h - hues[0])) < 0.03 for h in hues)
+    first, second = synthetic_seasons([2024, 2025], n_teams=8, n_conferences=2, weeks=2, postseason_games=0)
+    assert [t.color for t in second.teams] == [t.color for t in first.teams]  # a carried roster keeps its colours

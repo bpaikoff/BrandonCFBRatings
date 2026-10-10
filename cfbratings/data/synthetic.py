@@ -2,18 +2,21 @@
 
 Used by the test-suite, the ``--demo`` CLI mode and the dashboard's demo mode so that the
 whole pipeline runs without an API key. Each team gets a latent strength (in points);
-game margins are ``strength difference + home-field advantage + Gaussian noise``.
+game margins are ``strength difference + home-field advantage + Gaussian noise``. Teams
+also get deterministic brand colours (one hue family per conference) so that demo mode is
+not a wall of grey; there are no logos.
 """
 
 from __future__ import annotations
 
+import colorsys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
-from .schema import Game, Team, normalize_games
+from .schema import Game, Team, contrast_color, normalize_games
 
 _CONFERENCES = [
     "Atlantic Coast",
@@ -90,11 +93,20 @@ def synthetic_season(
             strength[t.school] = float(carry_rho * carry_from.true_strength[t.school] + rng.normal(0.0, innovation_sd))
     else:
         for i in range(n_teams):
-            c = i % n_conferences
-            name = f"{_PREFIXES[c]} {_team_label(i // n_conferences)}"
+            c, position = i % n_conferences, i // n_conferences
+            name = f"{_PREFIXES[c]} {_team_label(position)}"
             if name in strength:
                 raise ValueError(f"duplicate synthetic team name {name!r}")
-            teams.append(Team(school=name, conference=conf_names[c], classification="fbs"))
+            color = _team_color(c, n_conferences, position)
+            teams.append(
+                Team(
+                    school=name,
+                    conference=conf_names[c],
+                    classification="fbs",
+                    color=color,
+                    alt_color=contrast_color(color),
+                )
+            )
             strength[name] = float(conf_offset[c] + rng.normal(0.0, strength_sd))
 
     by_conf: dict[str, list[str]] = {}
@@ -196,6 +208,25 @@ def synthetic_seasons(
         )
         out.append(prev)
     return out
+
+
+_GOLDEN = 0.618033988749895  # golden-ratio steps spread a sequence evenly over [0, 1)
+
+
+def _team_color(conf_index: int, n_conferences: int, position: int) -> str:
+    """A deterministic brand colour: one hue per conference, a different shade per team.
+
+    The hue is the conference's slot on the colour wheel; lightness and saturation step
+    through golden-ratio sequences keyed on the team's position within its conference, so
+    conference-mates share a hue family but stay distinguishable. The result depends only
+    on these indices, never on the random stream, so the same roster always gets the same
+    colours. ``alt_color`` (white or black) is chosen by :func:`contrast_color`.
+    """
+    hue = (conf_index / max(n_conferences, 1)) % 1.0
+    lightness = 0.26 + 0.30 * ((position * _GOLDEN) % 1.0)
+    saturation = 0.55 + 0.35 * (((position + 1) * _GOLDEN) % 1.0)
+    r, g, b = colorsys.hls_to_rgb(hue, lightness, saturation)
+    return f"#{round(255 * r):02x}{round(255 * g):02x}{round(255 * b):02x}"
 
 
 def _team_label(i: int) -> str:

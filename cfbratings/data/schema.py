@@ -7,6 +7,7 @@ that the rest of the package never has to care which flavour it was given.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -14,6 +15,9 @@ from typing import Any
 REGULAR = "regular"
 POSTSEASON = "postseason"
 FCS_POOL = "FCS (pooled)"
+
+_HEX6 = re.compile(r"[0-9a-f]{6}")
+_HEX3 = re.compile(r"[0-9a-f]{3}")
 
 
 def is_pool_team(name: str | None) -> bool:
@@ -27,21 +31,71 @@ def _pick(d: Mapping[str, Any], *keys: str, default: Any = None) -> Any:
     return default
 
 
+def normalize_hex_color(value: Any) -> str | None:
+    """Coerce a CSS-style colour to lower-case ``#rrggbb``; ``None`` for anything unusable.
+
+    CFBD ships ``#9e1b32``-style strings, but the leading ``#`` and the case are not worth
+    trusting and ``#rgb`` shorthand is expanded. Blank or malformed values become ``None``
+    so that an invalid colour never reaches a chart.
+    """
+    if value is None:
+        return None
+    s = str(value).strip().lower().removeprefix("#")
+    if _HEX6.fullmatch(s):
+        return f"#{s}"
+    if _HEX3.fullmatch(s):
+        return "#" + "".join(ch * 2 for ch in s)
+    return None
+
+
+def contrast_color(color: str | None, *, light: str = "#ffffff", dark: str = "#000000") -> str:
+    """``light`` or ``dark``, whichever reads better on top of ``color`` (WCAG relative luminance).
+
+    Unknown or invalid colours get ``dark``, the safe choice on the default light background.
+    """
+    hex_color = normalize_hex_color(color)
+    if hex_color is None:
+        return dark
+    linear = []
+    for i in (1, 3, 5):
+        c = int(hex_color[i : i + 2], 16) / 255.0
+        linear.append(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4)
+    luminance = 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+    return light if luminance < 0.179 else dark  # the point where white and black contrast equally
+
+
 @dataclass(frozen=True, slots=True)
 class Team:
     school: str
     conference: str | None = None
     classification: str | None = None  # "fbs" | "fcs" | ...
     abbreviation: str | None = None
+    color: str | None = None  # primary brand colour, lower-case "#rrggbb"
+    alt_color: str | None = None  # secondary brand colour (CFBD ``alternateColor``)
+    logo: str | None = None  # 500 px logo for light backgrounds (first entry of CFBD ``logos``)
+    logo_dark: str | None = None  # the ``logos-dark`` variant for dark backgrounds, when there is one
 
     @classmethod
     def from_cfbd(cls, d: Mapping[str, Any]) -> Team:
+        logos = [str(u) for u in (_pick(d, "logos", default=None) or []) if u]
         return cls(
             school=str(_pick(d, "school", "team", "name")),
             conference=_pick(d, "conference"),
             classification=_pick(d, "classification", "division"),
             abbreviation=_pick(d, "abbreviation"),
+            color=normalize_hex_color(_pick(d, "color")),
+            alt_color=normalize_hex_color(_pick(d, "alt_color", "alternateColor", "alternate_color")),
+            logo=_pick(d, "logo", default=logos[0] if logos else None),
+            logo_dark=_pick(d, "logo_dark", default=next((u for u in logos if "logos-dark" in u), None)),
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> Team:
+        """Inverse of :meth:`to_dict` (also accepts raw CFBD ``/teams`` rows)."""
+        return cls.from_cfbd(d)
 
 
 @dataclass(frozen=True, slots=True)
