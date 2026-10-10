@@ -96,6 +96,33 @@ def test_conference_strength_band_and_table(season):
     assert conference_strength({}, {}) == {}
 
 
+def _unplayed(g):
+    return Game(id=g.id, season=g.season, week=g.week, home=g.home, away=g.away, neutral_site=g.neutral_site)
+
+
+def test_team_table_has_no_sos_or_momentum_before_a_team_has_played(season):
+    model = make_model("massey")
+    res = model.fit(season.team_names, season.games)
+    cal = MarginCalibrator.fit_cv(model, season.team_names, season.games)
+    names = season.team_names
+
+    # Preseason: every game is scheduled but unplayed, so nothing can be ranked by schedule.
+    table = team_table(names, [_unplayed(g) for g in season.games], res, cal)
+    assert table["sos"].isna().all() and table["momentum"].isna().all()
+    assert str(table["sos_rank"].dtype) == "Int64" and table["sos_rank"].isna().all()
+    assert set(table["record"]) == {"0-0"}
+    assert strength_of_schedule(names, [], res.ratings) == pytest.approx(dict.fromkeys(names, np.nan), nan_ok=True)
+
+    # One game in: only its two teams have a schedule strength, and they take ranks 1 and 2.
+    first = season.games[0]
+    table = team_table(names, [first, *(_unplayed(g) for g in season.games[1:])], res, cal)
+    played = table[table["team"].isin({first.home, first.away})]
+    rest = table[~table["team"].isin({first.home, first.away})]
+    assert sorted(played["sos_rank"].tolist()) == [1, 2]
+    assert played["sos"].notna().all() and played["momentum"].notna().all()
+    assert rest["sos_rank"].isna().all() and rest["sos"].isna().all() and rest["momentum"].isna().all()
+
+
 def test_team_table_and_schedule_table(season):
     model = make_model("hybrid")
     res = model.fit(season.team_names, season.games)

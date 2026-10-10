@@ -75,6 +75,7 @@ SCALE_LABELS = {
 }
 # WCAG minimum for large text; a team colour below this on the page surface is not used for the name.
 MIN_HEADING_CONTRAST = 3.0
+NO_VALUE = RANK_UNCHANGED  # the same en dash on a stat tile that has nothing to show yet
 
 # Every custom block (stat tiles, team header, matchup chips) is a wrapping flex row so that a
 # 420 px phone gets stacked tiles instead of a horizontal scrollbar.
@@ -93,9 +94,10 @@ _CSS = """
 .team-name{font-size:1.9rem;font-weight:700;line-height:1.15;overflow-wrap:anywhere}
 .team-sub{font-size:.95rem;opacity:.75;margin-top:2px}
 .chips{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:2px 0 14px;color:var(--text-color)}
-.chip{display:inline-flex;align-items:center;gap:8px;padding:6px 14px 6px 8px;border-radius:999px;
+.chip{display:inline-flex;align-items:center;gap:8px;padding:5px 14px 5px 6px;border-radius:999px;
       font-weight:600;max-width:100%;overflow-wrap:anywhere;border:1px solid rgba(128,128,128,.35)}
-.chip img{width:28px;height:28px;object-fit:contain;flex:0 0 auto}
+.chip img{width:32px;height:32px;padding:3px;box-sizing:border-box;border-radius:50%;object-fit:contain;
+          flex:0 0 auto}
 .chips-vs{opacity:.7;font-size:.9rem}
 </style>
 """
@@ -148,8 +150,11 @@ def heading_color(t: Team | None, theme: str) -> str | None:
     return None
 
 
-def _img(src: str | None, cls: str) -> str:
-    return f'<img class="{cls}" src="{html.escape(src)}" alt="">' if src else ""
+def _img(src: str | None, cls: str, style: str | None = None) -> str:
+    if not src:
+        return ""
+    extra = f' style="{html.escape(style)}"' if style else ""
+    return f'<img class="{cls}" src="{html.escape(src)}"{extra} alt="">'
 
 
 def kpi_row(items: list[tuple[str, str, str | None]], extra_html: str = "") -> None:
@@ -201,9 +206,18 @@ def team_header(t: Team | None, name: str, conference: str, theme: str) -> None:
 
 
 def team_chip(name: str, t: Team | None, theme: str, logo_map: Mapping[str, str | None]) -> str:
-    bg = (t.color if t else None) or resolve_team_color(None, None, theme)
+    """A pill in the team colour with its logo and name.
+
+    The fill goes through :func:`resolve_team_color`, so a colour that would vanish against the
+    page (Iowa's black on the dark page) is swapped for the alternate colour, and the text is
+    black or white by :func:`contrast_color`. The logo is the page-theme variant, which is drawn
+    for the page surface, not for the team colour (Indiana's crimson mark disappears on its own
+    crimson pill), so it sits on a small disc in the page surface colour inside the pill.
+    """
+    bg = resolve_team_color(t.color if t else None, t.alt_color if t else None, theme)
     style = f"background:{html.escape(bg)};color:{contrast_color(bg)}"
-    return f'<span class="chip" style="{style}">{_img(logo_map.get(name), "")}{html.escape(name)}</span>'
+    logo = _img(logo_map.get(name), "", style=f"background:{THEMES[theme]['surface']}")
+    return f'<span class="chip" style="{style}">{logo}{html.escape(name)}</span>'
 
 
 def matchup_header(home: str, away: str, neutral: bool, teams: Mapping[str, Team], theme: str, logo_map) -> None:
@@ -238,6 +252,39 @@ def logo_col(label: str = "") -> st.column_config.ImageColumn:
     return st.column_config.ImageColumn(label, width=44)
 
 
+def fmt_blank(series: pd.Series, spec: str) -> pd.Series:
+    """``spec.format(v)`` per value with a blank for a missing one.
+
+    ``st.dataframe`` prints a missing value in a mixed column as the text "None", so columns that
+    are empty for some rows (no next game, no rank for a pooled opponent) are pre-formatted as text.
+    """
+    return series.map(lambda v: "" if pd.isna(v) else spec.format(v))
+
+
+def drop_empty_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Without the columns that hold no value at all (a Vegas line that was never loaded)."""
+    return df.dropna(axis="columns", how="all")
+
+
+def text_when_gappy(df: pd.DataFrame, config: dict, specs: Mapping[str, str]) -> tuple[pd.DataFrame, dict]:
+    """Number columns with a missing value become right-aligned text with a blank for the gap.
+
+    ``specs`` maps a column to its ``str.format`` spec. A column with every value present keeps
+    its numeric config (numeric sorting, the column's own number format); one with a gap would
+    otherwise print "None" there, so it is pre-formatted and its config swapped for a
+    ``TextColumn`` with the same label, width and help.
+    """
+    config = dict(config)
+    for col, spec in specs.items():
+        if col in df.columns and df[col].isna().any():
+            df = df.assign(**{col: fmt_blank(df[col], spec)})
+            c = config.get(col, {})
+            config[col] = st.column_config.TextColumn(
+                c.get("label"), width=c.get("width"), help=c.get("help"), alignment="right"
+            )
+    return df, config
+
+
 SORT_LABELS = {
     "rating": "Rating",
     "ppoints": "PPoints",
@@ -245,8 +292,12 @@ SORT_LABELS = {
     "momentum": "Momentum",
     "wins": "Wins",
 }
+# The same columns as a phrase for a chart title: "Top 16 by PPoints", "... by strength of schedule".
+SORT_PHRASES = {"rating": "rating", "ppoints": "PPoints", "sos": "strength of schedule", "momentum": "momentum"}
 METRIC_LABELS = {"accuracy": "Accuracy", "brier": "Brier", "log_loss": "Log loss", "mae": "MAE (pts)"}
 SEASON_TYPE_LABELS = {"both": "regular + postseason", "regular": "regular season", "postseason": "postseason"}
+# How the calibrator was fitted, for the KPI tile; any other source reads as its own words.
+CAL_SOURCE_LABELS = {"cross_val": "cross-validated", "in_sample": "in-sample", "out_of_sample": "out-of-sample"}
 # Backtest metric columns, shared by the headline table and the per-season tables.
 BT_PERCENT_COLS = ["accuracy", "ats_accuracy"]
 BT_COLUMNS = {
@@ -264,6 +315,53 @@ BT_COLUMNS = {
     "seasons": "Seasons",
     "weeks": "Weeks",
 }
+# The out-of-sample predictions as a reader sees them; the CSV download keeps every raw column.
+OOS_COLUMNS = {
+    "method": "Method",
+    "season": st.column_config.NumberColumn("Season", format="%d", width="small"),
+    "week": st.column_config.NumberColumn("Week", width="small"),
+    "home": st.column_config.TextColumn("Home", width="medium"),
+    "away": st.column_config.TextColumn("Away", width="medium"),
+    "neutral": st.column_config.TextColumn("Neutral", width="small", help="n = neutral site"),
+    "pred_margin": st.column_config.NumberColumn("Predicted margin", format="%+.1f", help="Home margin"),
+    "p_home": pct_num("Home win %"),
+    "actual_margin": st.column_config.NumberColumn("Actual margin", format="%+d"),
+    "result": st.column_config.TextColumn("Result", width="small", help="Home team's result"),
+    "pick": st.column_config.TextColumn("Pick", width="small", help="Did the favourite win?"),
+}
+
+
+def backtest_table(df: pd.DataFrame) -> None:
+    """A backtest summary table without the columns that have nothing in them.
+
+    The Vegas and against-the-spread metrics only exist when closing lines were loaded, which the
+    dashboard never does, so those columns (and their configs) are dropped when absent or empty.
+    """
+    df = drop_empty_columns(df)
+    st.dataframe(
+        percent_cols(df, BT_PERCENT_COLS),
+        hide_index=True,
+        width="stretch",
+        height=table_height(len(df)),
+        column_config={k: v for k, v in BT_COLUMNS.items() if k in df.columns},
+    )
+
+
+def oos_predictions_view(preds: pd.DataFrame) -> pd.DataFrame:
+    """The curated out-of-sample predictions: one row per game and method, formatted for reading.
+
+    Drops the prior/rating/Vegas working columns, writes the neutral flag as ``"n"`` or blank, the
+    home result as W/L/T and the pick as a tick or cross, and leaves out any column that is empty
+    for every row (``vegas_margin`` when no lines were loaded).
+    """
+    margin = preds["actual_margin"]
+    view = preds.assign(
+        neutral=preds["neutral"].map(lambda v: "n" if bool(v) else ""),
+        result=margin.map(lambda m: "" if pd.isna(m) else "W" if m > 0 else "L" if m < 0 else "T"),
+        pick=preds["correct"].map(lambda c: "" if pd.isna(c) else "✓" if c else "✗"),
+    )
+    view = view.reindex(columns=[c for c in OOS_COLUMNS if c in view.columns])
+    return drop_empty_columns(view)
 
 
 # --- cached computations ---------------------------------------------------------------------
@@ -509,7 +607,7 @@ kpi_row(
         ("No. 1", top_team, str(recs[top_team])),
         ("Home-field advantage", f"{cal.intercept:+.1f} pts", "calibrated, cross-validated"),
         ("Spread uncertainty", f"±{cal.sigma:.1f} pts", "residual sigma of predicted margins"),
-        ("Calibration games", f"{cal.n_games}", cal.source.replace("_", " ")),
+        ("Calibration games", f"{cal.n_games}", CAL_SOURCE_LABELS.get(cal.source, cal.source.replace("_", " "))),
     ]
 )
 
@@ -540,12 +638,11 @@ with tab_rank:
     cols = ["rank", "change", "logo", "team", "conference", "record", "rating", "sos", "sos_rank", "momentum"] + (
         ["ppoints"] if pp is not None else []
     )
-    st.dataframe(
+    # A team with no completed game (the whole league in the preseason, a bye-week team in week 1)
+    # has no schedule strength or momentum: those cells are blank, never "None".
+    shown, rank_config = text_when_gappy(
         table[cols],
-        hide_index=True,
-        width="stretch",
-        height=table_height(len(table)),
-        column_config={
+        {
             "rank": st.column_config.NumberColumn("#", width="small"),
             "change": st.column_config.TextColumn("Δ", width="small", help="Rank change since the previous week"),
             "logo": logo_col(),
@@ -562,7 +659,9 @@ with tab_rank:
             ),
             "ppoints": st.column_config.NumberColumn("PPoints", format="%.1f"),
         },
+        {"sos": "{:.3f}", "sos_rank": "{}", "momentum": "{:+.1f}"},
     )
+    st.dataframe(shown, hide_index=True, width="stretch", height=table_height(len(shown)), column_config=rank_config)
     st.download_button(
         "Download CSV",
         table.drop(columns=["logo"]).to_csv(index=False).encode(),
@@ -578,14 +677,17 @@ with tab_rank:
             top=top_n,
             value_col=value_col,
             value_label=rating_label if value_col == "rating" else SORT_LABELS[value_col],
-            title=f"Top {len(table)} by {SORT_LABELS[value_col].lower()}",
+            title=f"Top {len(table)} by {SORT_PHRASES[value_col]}",
             theme=theme,
             team_colors=team_colors if color_by == "Team" else None,
         ),
         theme,
     )
-    with st.expander("Rating vs. schedule strength", expanded=True):
-        chart(rating_sos_scatter(table, theme=theme), theme)
+    if n_played == 0:
+        st.caption("Rating vs. schedule strength appears once the first week has been played.")
+    else:
+        with st.expander("Rating vs. schedule strength", expanded=True):
+            chart(rating_sos_scatter(table, theme=theme), theme)
 
 # --- team ----------------------------------------------------------------------------------------
 
@@ -595,12 +697,17 @@ with tab_team:
     row = full[full["team"] == team].iloc[0]
     proj: TeamProjection = project_team(team, games, result, cal, recs[team])
     team_header(team_by_name.get(team), team, conf_map.get(team) or "Independent", theme)
+    played = pd.notna(row["sos"])  # no completed game yet: no schedule strength and no momentum
     tiles = [
         ("Rank", f"#{int(row['rank'])}", f"of {len(real_names)}"),
         ("Record", row["record"], f"{len(proj.remaining)} game{'s' if len(proj.remaining) != 1 else ''} left"),
         (rating_label, f"{row['rating']:.3f}", None),
-        ("SOS rank", f"#{int(row['sos_rank'])}", f"SOS {row['sos']:.3f}"),
-        ("Momentum", f"{row['momentum']:+.1f} pts", "last 3 games vs. expectation"),
+        (
+            "SOS rank",
+            f"#{int(row['sos_rank'])}" if played else NO_VALUE,
+            f"SOS {row['sos']:.3f}" if played else "no game yet",
+        ),
+        ("Momentum", f"{row['momentum']:+.1f} pts" if played else NO_VALUE, "last 3 games vs. expectation"),
     ]
     if proj.remaining:
         tiles.append(
@@ -641,16 +748,13 @@ with tab_team:
 
     # Unplayed games have no result yet and a pooled FCS opponent has no rank. Streamlit prints
     # missing numbers as "None", so these columns are pre-formatted as text with blanks instead.
-    def _fmt(col: str, spec: str) -> pd.Series:
-        return sched[col].map(lambda v: "" if pd.isna(v) else spec.format(v))
-
     sched = sched.assign(
         opp_logo=logos(sched["opponent"]),  # the pooled "X (FCS)" label matches nothing: blank cell
         result=sched["result"].fillna(""),
         score=sched["score"].fillna(""),
-        opp_rank=_fmt("opp_rank", "#{:.0f}"),
-        actual_margin=_fmt("actual_margin", "{:+.0f}"),
-        vs_expected=_fmt("vs_expected", "{:+.1f}"),
+        opp_rank=fmt_blank(sched["opp_rank"], "#{:.0f}"),
+        actual_margin=fmt_blank(sched["actual_margin"], "{:+.0f}"),
+        vs_expected=fmt_blank(sched["vs_expected"], "{:+.1f}"),
     )
     st.dataframe(
         percent_cols(sched, ["win_prob"])[SCHED_COLS],
@@ -691,8 +795,17 @@ with tab_proj:
             f"{MODEL_LABELS[method]} ratings; win-total odds are exact Poisson-binomial sums, not simulations."
         )
     proj_df = projection_table(names, games, result, cal, conference_map=conf_map)
+    proj_view = proj_df  # the display copy; ``proj_df`` stays raw for the CSV download
     if not proj_df.empty:
         proj_df = proj_df.assign(logo=logos(proj_df["team"]), next_logo=logos(proj_df["next_opponent"]))
+        # A team with nothing left to play has no next game: those cells are blank text rather
+        # than the "None" that st.dataframe prints for a missing value, and its record is final.
+        proj_view = proj_df.assign(
+            proj_record=proj_df["proj_record"].where(proj_df["remaining"] > 0, "Final"),
+            next_opponent=proj_df["next_opponent"].fillna(""),
+            next_site=proj_df["next_site"].fillna(""),
+            next_win_prob=fmt_blank(proj_df["next_win_prob"], "{:.0%}"),
+        )
     p1, p2 = st.columns([1, 1])
     proj_sort = p1.selectbox(
         "Sort by",
@@ -708,36 +821,26 @@ with tab_proj:
     proj_conf = p2.selectbox("Conference ", ["All", *sorted({conf_map[n] or "Independent" for n in real_names})])
     if proj_conf != "All":
         proj_df = proj_df[proj_df["conference"] == proj_conf]
+        proj_view = proj_view[proj_view["conference"] == proj_conf]
     proj_df = proj_df.sort_values(proj_sort, ascending=proj_sort == "rank")
+    proj_view = proj_view.sort_values(proj_sort, ascending=proj_sort == "rank")
+    PROJ_COLS = [
+        "rank", "logo", "team", "conference", "record", "remaining", "proj_record",
+        "p_6_wins", "p_8_wins", "p_10_wins", "p_12_wins", "p_win_out",
+        "next_logo", "next_opponent", "next_site", "next_win_prob",
+    ]  # fmt: skip
+    if n_unplayed == 0:  # season over: nothing is left and nobody has a next game
+        PROJ_COLS = [c for c in PROJ_COLS if c != "remaining" and not c.startswith("next_")]
     st.dataframe(
-        percent_cols(proj_df, ["p_6_wins", "p_8_wins", "p_10_wins", "p_12_wins", "p_win_out", "next_win_prob"])[
-            [
-                "rank",
-                "logo",
-                "team",
-                "conference",
-                "record",
-                "remaining",
-                "proj_record",
-                "p_6_wins",
-                "p_8_wins",
-                "p_10_wins",
-                "p_12_wins",
-                "p_win_out",
-                "next_logo",
-                "next_opponent",
-                "next_site",
-                "next_win_prob",
-            ]
-        ],
+        percent_cols(proj_view, ["p_6_wins", "p_8_wins", "p_10_wins", "p_12_wins", "p_win_out"])[PROJ_COLS],
         hide_index=True,
         width="stretch",
-        height=table_height(len(proj_df)),
+        height=table_height(len(proj_view)),
         column_config={
             "rank": st.column_config.NumberColumn("#", width="small"),
             "logo": logo_col(),
-            "team": "Team",
-            "conference": "Conference",
+            "team": st.column_config.TextColumn("Team", width="medium"),
+            "conference": st.column_config.TextColumn("Conference", width="medium"),
             "record": st.column_config.TextColumn("Record", width="small"),
             "remaining": st.column_config.NumberColumn("Left", width="small"),
             "proj_record": st.column_config.TextColumn("Projected", help="Expected final wins-losses"),
@@ -747,9 +850,9 @@ with tab_proj:
             "p_12_wins": pct_bar("12+ wins"),
             "p_win_out": pct_num("Win out"),
             "next_logo": logo_col(),
-            "next_opponent": "Next opponent",
+            "next_opponent": st.column_config.TextColumn("Next opponent", width="medium"),
             "next_site": st.column_config.TextColumn("Site", width="small"),
-            "next_win_prob": pct_num("Next win %"),
+            "next_win_prob": st.column_config.TextColumn("Next win %", width="small"),
         },
     )
     st.download_button(
@@ -795,36 +898,39 @@ with tab_match:
     home = h1.selectbox("Home", ranked_names, index=0)
     away = h2.selectbox("Away", ranked_names, index=1 if len(ranked_names) > 1 else 0)
     neutral = h3.toggle("Neutral site")
-    matchup_header(home, away, neutral, team_by_name, theme, logo_map)
-    rows = []
-    for m in MODEL_NAMES:
-        ws_m = warm_start_cached(m, params_json, data_key, names, all_games, season)
-        res_m, cal_m = fit_cached(m, params_json, data_key, names, games, ws_m)
-        p = cal_m.predict_game(res_m, home, away, neutral)
-        rows.append({"method": MODEL_LABELS[m], "line": p.spread, "home_margin": p.margin, "p_home": p.p_home})
-    df_m = pd.DataFrame(rows)
-    consensus_margin = float(df_m["home_margin"].mean())
-    consensus_p = float(df_m["p_home"].mean())
-    fav = home if consensus_margin >= 0 else away
-    kpi_row(
-        [
-            ("Consensus line", f"{fav} -{abs(consensus_margin):.1f}", "mean of all five models"),
-            (f"{home} win probability", f"{consensus_p:.0%}", "home" if not neutral else "neutral site"),
-            (f"{away} win probability", f"{1 - consensus_p:.0%}", "away" if not neutral else "neutral site"),
-        ]
-    )
-    st.dataframe(
-        percent_cols(df_m, ["p_home"]),
-        hide_index=True,
-        width="stretch",
-        height=table_height(len(df_m)),
-        column_config={
-            "method": "Method",
-            "line": "Line",
-            "home_margin": st.column_config.NumberColumn("Home margin", format="%+.1f"),
-            "p_home": pct_bar("Home win prob", decimals=1),
-        },
-    )
+    if home == away:
+        st.warning("Pick two different teams")
+    else:
+        matchup_header(home, away, neutral, team_by_name, theme, logo_map)
+        rows = []
+        for m in MODEL_NAMES:
+            ws_m = warm_start_cached(m, params_json, data_key, names, all_games, season)
+            res_m, cal_m = fit_cached(m, params_json, data_key, names, games, ws_m)
+            p = cal_m.predict_game(res_m, home, away, neutral)
+            rows.append({"method": MODEL_LABELS[m], "line": p.spread, "home_margin": p.margin, "p_home": p.p_home})
+        df_m = pd.DataFrame(rows)
+        consensus_margin = float(df_m["home_margin"].mean())
+        consensus_p = float(df_m["p_home"].mean())
+        fav = home if consensus_margin >= 0 else away
+        kpi_row(
+            [
+                ("Consensus line", f"{fav} -{abs(consensus_margin):.1f}", "mean of all five models"),
+                (f"{home} win probability", f"{consensus_p:.0%}", "home" if not neutral else "neutral site"),
+                (f"{away} win probability", f"{1 - consensus_p:.0%}", "away" if not neutral else "neutral site"),
+            ]
+        )
+        st.dataframe(
+            percent_cols(df_m, ["p_home"]),
+            hide_index=True,
+            width="stretch",
+            height=table_height(len(df_m)),
+            column_config={
+                "method": "Method",
+                "line": "Line",
+                "home_margin": st.column_config.NumberColumn("Home margin", format="%+.1f"),
+                "p_home": pct_bar("Home win prob", decimals=1),
+            },
+        )
 
 # --- backtest -----------------------------------------------------------------------------------------
 
@@ -842,16 +948,12 @@ with tab_bt:
     chosen = b1.multiselect("Methods", MODEL_NAMES, default=list(MODEL_NAMES), format_func=lambda m: MODEL_LABELS[m])
     max_week = max(2, max_completed_week(all_games))
     start_week = int(b2.slider("Start week", 1, max_week, 1 if n_prior_seasons > 0 else min(4, max_week)))
-    if chosen:
+    if not chosen:
+        st.info("Pick at least one method to run the backtest.")
+    else:
         table_bt, detail = backtest_cached(tuple(chosen), start_week, params_json, data_key, names, all_games)
         table_bt = table_bt.assign(method=[MODEL_LABELS.get(m, m) for m in table_bt["method"]])
-        st.dataframe(
-            percent_cols(table_bt, BT_PERCENT_COLS),
-            hide_index=True,
-            width="stretch",
-            height=table_height(len(table_bt)),
-            column_config=BT_COLUMNS,
-        )
+        backtest_table(table_bt)
         metric = st.selectbox("Weekly metric", list(METRIC_LABELS), index=0, format_func=METRIC_LABELS.get)
         wl, wr = st.columns(2)
         with wl:
@@ -875,16 +977,16 @@ with tab_bt:
             with st.expander("By season"):
                 for m, d in detail.items():
                     st.markdown(f"**{MODEL_LABELS[m]}**")
-                    st.dataframe(
-                        percent_cols(d[3], BT_PERCENT_COLS),
-                        hide_index=True,
-                        width="stretch",
-                        height=table_height(len(d[3])),
-                        column_config=BT_COLUMNS,
-                    )
+                    backtest_table(d[3])
         with st.expander("Out-of-sample predictions"):
             all_preds = pd.concat([d[0].assign(method=m) for m, d in detail.items()], ignore_index=True)
-            st.dataframe(all_preds, hide_index=True, width="stretch")
+            shown = oos_predictions_view(all_preds.assign(method=[MODEL_LABELS.get(m, m) for m in all_preds["method"]]))
+            st.dataframe(
+                percent_cols(shown, ["p_home"]),
+                hide_index=True,
+                width="stretch",
+                column_config={k: v for k, v in OOS_COLUMNS.items() if k in shown.columns},
+            )
             st.download_button(
                 "Download predictions CSV", all_preds.to_csv(index=False).encode(), f"backtest_{season}.csv", "text/csv"
             )

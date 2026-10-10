@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone, tzinfo
 from statistics import median
@@ -36,14 +37,18 @@ def records(teams: Sequence[str], games: Sequence[Game]) -> dict[str, Record]:
 
 
 def strength_of_schedule(teams: Sequence[str], games: Sequence[Game], ratings: Mapping[str, float]) -> Ratings:
-    """Mean opponent rating over games played (same units as ``ratings``)."""
+    """Mean opponent rating over games played (same units as ``ratings``).
+
+    A team that has not completed a game yet has no schedule strength: it gets ``nan``, never
+    a zero that would rank it against teams that have played.
+    """
     opp: dict[str, list[float]] = {t: [] for t in teams}
     for g in games:
         if not g.has_score or g.home not in opp or g.away not in opp:
             continue
         opp[g.home].append(ratings.get(g.away, 0.0))
         opp[g.away].append(ratings.get(g.home, 0.0))
-    return {t: float(np.mean(v)) if v else 0.0 for t, v in opp.items()}
+    return {t: float(np.mean(v)) if v else math.nan for t, v in opp.items()}
 
 
 def momentum(
@@ -57,7 +62,8 @@ def momentum(
     """Average points-above-expectation over each team's last ``last_n`` games.
 
     "Expectation" is the calibrated predicted margin, so momentum is in points for every
-    model. Positive values mean the team has recently beaten its own rating.
+    model. Positive values mean the team has recently beaten its own rating; a team with no
+    completed game has no momentum yet and gets ``nan``.
     """
     resid: dict[str, list[float]] = {t: [] for t in teams}
     for g in sorted((g for g in games if g.has_score), key=lambda g: g.order_key):
@@ -67,7 +73,7 @@ def momentum(
         delta = g.margin - expected
         resid[g.home].append(delta)
         resid[g.away].append(-delta)
-    return {t: float(np.mean(v[-last_n:])) if v else 0.0 for t, v in resid.items()}
+    return {t: float(np.mean(v[-last_n:])) if v else math.nan for t, v in resid.items()}
 
 
 def _band_scale(x: float, lo_src: float, hi_src: float, lo_dst: float, hi_dst: float) -> float:
@@ -155,14 +161,19 @@ def team_table(
     *,
     ppoints: Mapping[str, float] | None = None,
 ) -> pd.DataFrame:
-    """One row per team: rank, rating, record, SOS, momentum (and PPoints when given)."""
+    """One row per team: rank, rating, record, SOS, momentum (and PPoints when given).
+
+    ``sos`` and ``momentum`` are ``nan`` and ``sos_rank`` is missing (the column is nullable
+    ``Int64``) for a team with no completed game, so the preseason table carries no made-up
+    schedule ranks; only teams that have played are ranked, best schedule first.
+    """
     recs = records(teams, games)
     sos = strength_of_schedule(teams, games, result.ratings)
     mom = momentum(teams, games, result, calibrator)
     sos_rank = {
         t: i + 1
         for i, (t, _) in enumerate(
-            sorted(((t, v) for t, v in sos.items() if not is_pool_team(t)), key=lambda kv: -kv[1])
+            sorted(((t, v) for t, v in sos.items() if not is_pool_team(t) and not math.isnan(v)), key=lambda kv: -kv[1])
         )
     }
     rows = []
@@ -176,13 +187,16 @@ def team_table(
             "losses": recs[team].losses,
             "rating": rating,
             "sos": sos[team],
-            "sos_rank": sos_rank[team],
+            "sos_rank": sos_rank.get(team),
             "momentum": mom[team],
         }
         if ppoints is not None:
             row["ppoints"] = float(ppoints.get(team, 0.0))
         rows.append(row)
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["sos_rank"] = df["sos_rank"].astype("Int64")
+    return df
 
 
 def schedule_table(
