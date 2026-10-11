@@ -115,13 +115,15 @@ def test_dashboard_preseason_and_completed_season_states():
     assert any("preseason" in c.value for c in at.caption)
     table = _rankings_table(at)
     assert set(table["change"]) == {"–"}
-    # Nobody has a schedule strength or momentum yet: blank cells (pre-formatted text, since the
-    # grid prints a missing number as "None"), no arbitrary SOS ranks, and no scatter.
-    assert set(table["sos"]) == set(table["sos_rank"]) == set(table["momentum"]) == {""}
+    # Nobody has played, so SOS is the mean rating of the scheduled opponents (numeric and ranked
+    # for every team, so header sorting stays numeric), momentum is 0 everywhere, and the scatter
+    # is shown with a caption saying what it plots.
+    assert table["sos"].dtype.kind == "f" and table["sos"].notna().all() and table["sos_rank"].notna().all()
+    assert (table["momentum"] == 0).all()
     assert _no_none_text(table)
-    assert any("schedule strength appears once" in c.value for c in at.caption)
+    assert any("scheduled opponents" in c.value for c in at.caption)
     tiles = next(m.value for m in at.markdown if "SOS rank" in m.value)
-    assert "no game yet" in tiles and tiles.count("–") >= 2  # the SOS-rank and momentum tiles
+    assert "scheduled opponents" in tiles and "no game yet" in tiles
 
     # Every game played: nothing left to project and no next-game tile, but nothing raises either.
     _weeks_slider(at).set_value(13)

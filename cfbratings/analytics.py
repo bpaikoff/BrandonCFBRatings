@@ -37,18 +37,25 @@ def records(teams: Sequence[str], games: Sequence[Game]) -> dict[str, Record]:
 
 
 def strength_of_schedule(teams: Sequence[str], games: Sequence[Game], ratings: Mapping[str, float]) -> Ratings:
-    """Mean opponent rating over games played (same units as ``ratings``).
+    """Mean opponent rating (same units as ``ratings``).
 
-    A team that has not completed a game yet has no schedule strength: it gets ``nan``, never
-    a zero that would rank it against teams that have played.
+    Over completed games once a team has played; until then over its *scheduled* opponents, so
+    the preseason table ranks schedules instead of showing zeros or gaps. Only a team with no
+    games at all gets ``nan``.
     """
-    opp: dict[str, list[float]] = {t: [] for t in teams}
+    played: dict[str, list[float]] = {t: [] for t in teams}
+    scheduled: dict[str, list[float]] = {t: [] for t in teams}
     for g in games:
-        if not g.has_score or g.home not in opp or g.away not in opp:
+        if g.home not in played or g.away not in played:
             continue
-        opp[g.home].append(ratings.get(g.away, 0.0))
-        opp[g.away].append(ratings.get(g.home, 0.0))
-    return {t: float(np.mean(v)) if v else math.nan for t, v in opp.items()}
+        bucket = played if g.has_score else scheduled
+        bucket[g.home].append(ratings.get(g.away, 0.0))
+        bucket[g.away].append(ratings.get(g.home, 0.0))
+    out: Ratings = {}
+    for t in teams:
+        v = played[t] or scheduled[t]
+        out[t] = float(np.mean(v)) if v else math.nan
+    return out
 
 
 def momentum(
@@ -63,7 +70,8 @@ def momentum(
 
     "Expectation" is the calibrated predicted margin, so momentum is in points for every
     model. Positive values mean the team has recently beaten its own rating; a team with no
-    completed game has no momentum yet and gets ``nan``.
+    completed game has no evidence either way and gets ``0.0`` (like PPoints), which keeps the
+    column numeric and sortable in the preseason.
     """
     resid: dict[str, list[float]] = {t: [] for t in teams}
     for g in sorted((g for g in games if g.has_score), key=lambda g: g.order_key):
@@ -73,7 +81,7 @@ def momentum(
         delta = g.margin - expected
         resid[g.home].append(delta)
         resid[g.away].append(-delta)
-    return {t: float(np.mean(v[-last_n:])) if v else math.nan for t, v in resid.items()}
+    return {t: float(np.mean(v[-last_n:])) if v else 0.0 for t, v in resid.items()}
 
 
 def _band_scale(x: float, lo_src: float, hi_src: float, lo_dst: float, hi_dst: float) -> float:
@@ -163,9 +171,9 @@ def team_table(
 ) -> pd.DataFrame:
     """One row per team: rank, rating, record, SOS, momentum (and PPoints when given).
 
-    ``sos`` and ``momentum`` are ``nan`` and ``sos_rank`` is missing (the column is nullable
-    ``Int64``) for a team with no completed game, so the preseason table carries no made-up
-    schedule ranks; only teams that have played are ranked, best schedule first.
+    ``sos`` comes from completed games, or from the scheduled opponents until a team has played,
+    so the preseason table ranks schedules rather than zeros; ``sos_rank`` (nullable ``Int64``)
+    is missing only for a team with no games at all. ``momentum`` is 0 until the first game.
     """
     recs = records(teams, games)
     sos = strength_of_schedule(teams, games, result.ratings)

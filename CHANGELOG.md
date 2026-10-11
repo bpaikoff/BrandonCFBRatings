@@ -69,6 +69,11 @@
   out-of-sample predictions expander is a curated, formatted view, the Elo formulas in
   METHODOLOGY.md no longer clip at phone width, and the synthetic schedule never books the same
   opponent in consecutive weeks.
+- Preseason without gaps: strength of schedule is the mean rating of the *scheduled* opponents
+  until a team has played (then of the opponents it has faced), momentum is 0 until the first
+  game like PPoints, so every rankings column stays numeric and header-sortable from day one and
+  the rating-vs-SOS scatter is shown with a caption. The dashboard's settings menu is hidden by
+  `toolbarMode = "minimal"`, so the pinned theme base is the only theme source.
 - ruff's `extend-exclude = ["data"]` matched `cfbratings/data` by basename, so that package was
   never linted; the pattern is now anchored to the repository's `data/` directory.
 

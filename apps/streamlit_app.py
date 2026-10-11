@@ -114,7 +114,9 @@ def current_theme() -> str:
     is only consulted when no base is pinned, because it reports the browser's colour-scheme
     preference rather than the page: on a pinned-light page a dark-mode browser makes it say
     "dark", which is how the charts once came out with white titles on a white page. With
-    neither (older Streamlit, no browser session, ``AppTest``) the answer is light.
+    neither (older Streamlit, no browser session, ``AppTest``) the answer is light. Viewers
+    cannot switch themes behind the app's back either: ``toolbarMode = "minimal"`` in the config
+    hides Streamlit's settings menu, so a pinned base is the only theme source.
     """
     base = st.get_option("theme.base")
     if base in ("light", "dark"):
@@ -651,7 +653,9 @@ with tab_rank:
             "record": st.column_config.TextColumn("Record", width="small"),
             "rating": st.column_config.NumberColumn(rating_label, format="%.3f"),
             "sos": st.column_config.NumberColumn(
-                "SOS", format="%.3f", help="Mean opponent rating, same units as the rating"
+                "SOS",
+                format="%.3f",
+                help="Mean opponent rating, same units as the rating; scheduled opponents until the first game",
             ),
             "sos_rank": st.column_config.NumberColumn("SOS #", width="small"),
             "momentum": st.column_config.NumberColumn(
@@ -683,11 +687,10 @@ with tab_rank:
         ),
         theme,
     )
-    if n_played == 0:
-        st.caption("Rating vs. schedule strength appears once the first week has been played.")
-    else:
-        with st.expander("Rating vs. schedule strength", expanded=True):
-            chart(rating_sos_scatter(table, theme=theme), theme)
+    with st.expander("Rating vs. schedule strength", expanded=True):
+        if n_played == 0:
+            st.caption("Before the first game, schedule strength is the mean rating of the scheduled opponents.")
+        chart(rating_sos_scatter(table, theme=theme), theme)
 
 # --- team ----------------------------------------------------------------------------------------
 
@@ -697,17 +700,20 @@ with tab_team:
     row = full[full["team"] == team].iloc[0]
     proj: TeamProjection = project_team(team, games, result, cal, recs[team])
     team_header(team_by_name.get(team), team, conf_map.get(team) or "Independent", theme)
-    played = pd.notna(row["sos"])  # no completed game yet: no schedule strength and no momentum
+    has_games = recs[team].games > 0
+    has_sos = pd.notna(row["sos"])  # false only for a team with nothing scheduled at all
     tiles = [
         ("Rank", f"#{int(row['rank'])}", f"of {len(real_names)}"),
         ("Record", row["record"], f"{len(proj.remaining)} game{'s' if len(proj.remaining) != 1 else ''} left"),
         (rating_label, f"{row['rating']:.3f}", None),
         (
             "SOS rank",
-            f"#{int(row['sos_rank'])}" if played else NO_VALUE,
-            f"SOS {row['sos']:.3f}" if played else "no game yet",
+            f"#{int(row['sos_rank'])}" if has_sos else NO_VALUE,
+            (f"SOS {row['sos']:.3f}" + ("" if has_games else " · scheduled opponents"))
+            if has_sos
+            else "nothing scheduled",
         ),
-        ("Momentum", f"{row['momentum']:+.1f} pts" if played else NO_VALUE, "last 3 games vs. expectation"),
+        ("Momentum", f"{row['momentum']:+.1f} pts", "last 3 games vs. expectation" if has_games else "no game yet"),
     ]
     if proj.remaining:
         tiles.append(
