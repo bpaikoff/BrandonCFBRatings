@@ -72,10 +72,13 @@ class Settings:
     bt_ridge: float = 1.0
 
     # --- Hybrid ----------------------------------------------------------------
+    # Tuned on real 2021-2024 seasons and held out on 2025 (docs/BACKTEST_RESULTS.md): the
+    # margin-based Massey view carries the blend; the equal blend it replaced trailed it by
+    # 0.009 log loss and 0.4 points of MAE on the hold-out.
     hybrid_weights: tuple[tuple[str, float], ...] = (
-        ("colley", 1.0 / 3.0),
-        ("massey", 1.0 / 3.0),
-        ("elo", 1.0 / 3.0),
+        ("colley", 0.2),
+        ("massey", 0.6),
+        ("elo", 0.2),
     )
 
     @classmethod

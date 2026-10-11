@@ -199,3 +199,14 @@ def test_consensus_spreads_fallback_to_mean():
         {"id": None, "lines": [{"spread": 1}]},
     ]
     assert consensus_spreads(raw) == {5: -4.0}
+
+
+def test_suite_never_reaches_the_network(tmp_path):
+    """``conftest.offline`` strips the key from every settings holder and blocks ``requests``."""
+    from cfbratings import settings
+    from cfbratings.cli import default_settings
+
+    assert settings.api_key == "" and default_settings.api_key == ""
+    client = CFBDClient(Settings(api_key="k", cache_dir=tmp_path / "cache", archive_dir=tmp_path / "archive"))
+    with pytest.raises(AssertionError, match="must not reach the network"):
+        client.teams(2030)
