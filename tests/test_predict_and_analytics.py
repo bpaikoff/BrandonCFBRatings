@@ -96,6 +96,39 @@ def test_conference_strength_band_and_table(season):
     assert conference_strength({}, {}) == {}
 
 
+def _unplayed(g):
+    return Game(id=g.id, season=g.season, week=g.week, home=g.home, away=g.away, neutral_site=g.neutral_site)
+
+
+def test_team_table_uses_the_schedule_before_a_team_has_played(season):
+    model = make_model("massey")
+    res = model.fit(season.team_names, season.games)
+    cal = MarginCalibrator.fit_cv(model, season.team_names, season.games)
+    names = season.team_names
+
+    # Preseason: every game is scheduled but unplayed, so SOS is the mean rating of the scheduled
+    # opponents (numeric for every team, ranked best schedule first) and momentum is 0 everywhere.
+    table = team_table(names, [_unplayed(g) for g in season.games], res, cal)
+    assert table["sos"].notna().all() and (table["momentum"] == 0.0).all()
+    assert str(table["sos_rank"].dtype) == "Int64" and sorted(table["sos_rank"].tolist()) == list(
+        range(1, len(names) + 1)
+    )
+    assert table.sort_values("sos", ascending=False)["sos_rank"].tolist() == list(range(1, len(names) + 1))
+    assert set(table["record"]) == {"0-0"}
+    # A team with no games at all has no schedule strength.
+    assert strength_of_schedule(names, [], res.ratings) == pytest.approx(dict.fromkeys(names, np.nan), nan_ok=True)
+
+    # One game in: its two teams switch to played-games SOS and get a real momentum; the rest
+    # keep their scheduled-opponent SOS and zero momentum.
+    first = season.games[0]
+    table = team_table(names, [first, *(_unplayed(g) for g in season.games[1:])], res, cal)
+    played = table[table["team"].isin({first.home, first.away})]
+    rest = table[~table["team"].isin({first.home, first.away})]
+    assert played["sos"].notna().all() and (played["momentum"] != 0.0).all()
+    assert rest["sos"].notna().all() and (rest["momentum"] == 0.0).all()
+    assert table["sos_rank"].notna().all()
+
+
 def test_team_table_and_schedule_table(season):
     model = make_model("hybrid")
     res = model.fit(season.team_names, season.games)

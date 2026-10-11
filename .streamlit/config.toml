@@ -1,9 +1,15 @@
+# Dashboard settings. The page is pinned to the light theme so the charts, which pick their
+# palette from the theme the page reports, always agree with it. Dark mode stays available:
+#   STREAMLIT_THEME_BASE=dark streamlit run apps/streamlit_app.py
+# Only the base and the accent are set; explicit page colours would override a dark base.
+
 [theme]
-primaryColor = "#2a78d6"
-backgroundColor = "#fcfcfb"
-secondaryBackgroundColor = "#f0efec"
-textColor = "#0b0b0b"
+base = "light"
+primaryColor = "#2a78d6"  # the charts' first series colour (cfbratings.viz.charts CATEGORICAL_LIGHT[0])
 font = "sans serif"
+
+[client]
+toolbarMode = "minimal"  # hides the Deploy button and developer menu
 
 [browser]
 gatherUsageStats = false

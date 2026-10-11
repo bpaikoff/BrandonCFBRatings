@@ -82,7 +82,15 @@ def test_fbs_pooling_matches_classification_fields(payload):
 
 def test_team_rows_parse(payload):
     teams = normalize_teams(payload["teams"])
-    assert teams[0] == Team(school="Ohio State", conference="Big Ten", classification="fbs", abbreviation="OSU")
+    assert teams[0] == Team(
+        school="Ohio State",
+        conference="Big Ten",
+        classification="fbs",
+        abbreviation="OSU",
+        color="#ce1141",
+        alt_color="#666666",
+    )
+    assert teams[0].logo is None and teams[0].logo_dark is None  # the spec sample ships an empty ``logos`` list
     assert [t.school for t in teams] == ["Ohio State", "Notre Dame", "Oregon"]
 
 

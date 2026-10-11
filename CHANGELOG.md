@@ -29,6 +29,54 @@
 - `trim_payload.py` keeps the roster row of every FBS school involved in the sample, so
   roster-based pooling works on it; `data/archive/README.md` lists what is archived.
 
+### Dashboard and data polish
+- `Team` carries `color`, `alt_color`, `logo` and `logo_dark` from the CFBD roster rows (synthetic
+  demo teams get deterministic colours), with `Team.to_dict()` / `Team.from_dict()`,
+  `contrast_color()` and `normalize_hex_color()` helpers in `cfbratings.data`.
+- Cache provenance: `JsonCache.info()` returns a `CacheInfo` (when a payload was fetched, whether it
+  is final, and whether the working cache or the committed archive would serve it);
+  `CFBDClient.freshness(year)` exposes it per season, and `cfbratings cache list` now prints the age
+  of every entry and whether it can expire.
+- Chart builders (`cfbratings.viz`): `rating_bar` and `trajectory_chart` take a team-colour map
+  (`resolve_team_color()` picks the primary or alternate colour that is legible on the theme's
+  surface; look-alike colours on one trajectory chart get dashed lines), `weekly_metric_chart`
+  hides weeks with fewer than `min_games` (default 5) and shows the game count in the hover,
+  `win_distribution_chart` and `conference_dots` take an `accent` colour, and tooltips are themed
+  so they are no longer white boxes on dark. Contrast of every text token on both themes is tested.
+- Dashboard: team logos in every table (rankings, schedule, projections, next opponent) and a rank
+  change column (▲ / ▼ / – / new versus the previous snapshot week, the preseason prior included);
+  the ranked bar chart colours by team (default) or conference; the Team tab has a header strip in
+  the team's colours, a "Next game" tile with the kickoff day (US Eastern) and win probability,
+  opponent logos, and team-coloured trajectory and win-total charts; Matchup shows both teams as
+  coloured chips; the Backtest weekly chart hides weeks with fewer than five games and the by-season
+  tables are formatted like the headline one; the sidebar reports where each loaded season came from
+  (archived, cached N hours ago, or about to call the API) and the number of API calls made this
+  session; the demo "weeks played" slider reaches 0 for a true preseason. `.streamlit/config.toml`
+  pins the light theme (charts and page always agree; `STREAMLIT_THEME_BASE=dark` for dark mode,
+  with dark logo variants), hides the Deploy toolbar and disables usage stats. Percentages are whole
+  numbers everywhere, selectors show labels instead of column names, unplayed games show blank
+  cells instead of `None`, and the blank strip under every table is gone. New pure helpers:
+  `cfbratings.snapshots.rank_map / previous_snapshot_week / rank_changes` and
+  `cfbratings.analytics.age_label / freshness_label / kickoff_label`, all unit-tested.
+- A headless QA pass (light, dark, phone width, demo preseason / mid-season / finished season)
+  drove eleven follow-up fixes: no `None` text anywhere (finished seasons show "Final" instead of
+  next-opponent cells), Matchup chips put the logo on a neutral disc and resolve the fill against
+  the page so dark-coloured teams survive dark mode, Home == Away is refused with a warning,
+  preseason SOS and momentum are blank instead of ranked zeros, the ranked bar chart's hover and
+  title follow the sort column, week axes run from the first to the last week with integer ticks,
+  dark-mode team colours are tinted toward legibility instead of falling back to white, the
+  rating-vs-SOS scatter labels the rows it is given (so filtered views keep labels), the
+  out-of-sample predictions expander is a curated, formatted view, the Elo formulas in
+  METHODOLOGY.md no longer clip at phone width, and the synthetic schedule never books the same
+  opponent in consecutive weeks.
+- Preseason without gaps: strength of schedule is the mean rating of the *scheduled* opponents
+  until a team has played (then of the opponents it has faced), momentum is 0 until the first
+  game like PPoints, so every rankings column stays numeric and header-sortable from day one and
+  the rating-vs-SOS scatter is shown with a caption. The dashboard's settings menu is hidden by
+  `toolbarMode = "minimal"`, so the pinned theme base is the only theme source.
+- ruff's `extend-exclude = ["data"]` matched `cfbratings/data` by basename, so that package was
+  never linted; the pattern is now anchored to the repository's `data/` directory.
+
 ### Fixes
 - **The test-suite made real API calls** whenever a `CFBD_API_KEY` was present: the dashboard smoke
   test picked the live source and fetched the current and previous seasons (four calls per run).

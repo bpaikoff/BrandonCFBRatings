@@ -9,6 +9,7 @@ games and all nine of their College Football Playoff games), the matching bettin
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,7 @@ import pytest
 from cfbratings.config import Settings
 from cfbratings.data import CFBDClient, load_season
 from cfbratings.data.cfbd import consensus_spreads, spread_sign_consistent
-from cfbratings.data.schema import FCS_POOL, normalize_games, normalize_teams, pool_non_fbs
+from cfbratings.data.schema import FCS_POOL, Team, normalize_games, normalize_teams, pool_non_fbs
 
 FIXTURE = Path(__file__).parent / "fixtures" / "games_2024_sample.json"
 PARSED_KEYS = {
@@ -105,6 +106,10 @@ def test_load_season_serves_the_sample_through_the_client(sample, tmp_path):
     teams, games = load_season(2024, "both", client=client)
     assert len(games) == 58 and len(teams) == 47 and FCS_POOL in {t.school for t in teams}
     assert client.cache.get_archived("games_2024_both") is not None  # a finished season lands in the archive tier
+    assert client.freshness(2024).tier == "cache" and client.freshness(2024).final
+    pool = next(t for t in teams if t.school == FCS_POOL)
+    assert (pool.color, pool.alt_color, pool.logo, pool.logo_dark) == (None, None, None, None)  # no brand to show
+    assert all(t.color and t.logo for t in teams if t.school != FCS_POOL)  # real schools keep theirs
 
 
 def test_closing_lines_follow_the_home_relative_sign_convention(sample):
@@ -117,3 +122,18 @@ def test_closing_lines_follow_the_home_relative_sign_convention(sample):
     ]
     assert rows and all(spread_sign_consistent(*row) for row in rows)
     assert {x["provider"] for r in sample["lines"] for x in r["lines"]} == {"ESPN Bet", "DraftKings", "Bovada"}
+
+
+def test_team_rows_carry_brand_colours_and_logos(sample):
+    hex_color = re.compile(r"#[0-9a-f]{6}")
+    rows = {row["school"]: row for row in sample["teams"]}
+    teams = normalize_teams(sample["teams"])
+    for t in teams:
+        assert hex_color.fullmatch(t.color) and hex_color.fullmatch(t.alt_color)
+        assert t.logo == f"https://cdn.collegefootballdata.com/logos/500/{rows[t.school]['id']}.png"
+        assert t.logo_dark == f"https://cdn.collegefootballdata.com/logos-dark/500/{rows[t.school]['id']}.png"
+        assert Team.from_dict(t.to_dict()) == t
+    osu = next(t for t in teams if t.school == "Ohio State")
+    assert (osu.color, osu.alt_color) == ("#ba0c2f", "#a7b1b7")
+    assert osu.logo.endswith("/logos/500/194.png") and osu.logo_dark.endswith("/logos-dark/500/194.png")
+    assert len({t.color for t in teams}) > 1

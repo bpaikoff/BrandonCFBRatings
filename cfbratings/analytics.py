@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timedelta, timezone, tzinfo
 from statistics import median
 
 import numpy as np
 import pandas as pd
 
+from .data.cache import CacheInfo
 from .data.schema import Game, Record, is_pool_team
 from .models.base import RatingResult, Ratings
 from .predict import MarginCalibrator
@@ -34,14 +37,25 @@ def records(teams: Sequence[str], games: Sequence[Game]) -> dict[str, Record]:
 
 
 def strength_of_schedule(teams: Sequence[str], games: Sequence[Game], ratings: Mapping[str, float]) -> Ratings:
-    """Mean opponent rating over games played (same units as ``ratings``)."""
-    opp: dict[str, list[float]] = {t: [] for t in teams}
+    """Mean opponent rating (same units as ``ratings``).
+
+    Over completed games once a team has played; until then over its *scheduled* opponents, so
+    the preseason table ranks schedules instead of showing zeros or gaps. Only a team with no
+    games at all gets ``nan``.
+    """
+    played: dict[str, list[float]] = {t: [] for t in teams}
+    scheduled: dict[str, list[float]] = {t: [] for t in teams}
     for g in games:
-        if not g.has_score or g.home not in opp or g.away not in opp:
+        if g.home not in played or g.away not in played:
             continue
-        opp[g.home].append(ratings.get(g.away, 0.0))
-        opp[g.away].append(ratings.get(g.home, 0.0))
-    return {t: float(np.mean(v)) if v else 0.0 for t, v in opp.items()}
+        bucket = played if g.has_score else scheduled
+        bucket[g.home].append(ratings.get(g.away, 0.0))
+        bucket[g.away].append(ratings.get(g.home, 0.0))
+    out: Ratings = {}
+    for t in teams:
+        v = played[t] or scheduled[t]
+        out[t] = float(np.mean(v)) if v else math.nan
+    return out
 
 
 def momentum(
@@ -55,7 +69,9 @@ def momentum(
     """Average points-above-expectation over each team's last ``last_n`` games.
 
     "Expectation" is the calibrated predicted margin, so momentum is in points for every
-    model. Positive values mean the team has recently beaten its own rating.
+    model. Positive values mean the team has recently beaten its own rating; a team with no
+    completed game has no evidence either way and gets ``0.0`` (like PPoints), which keeps the
+    column numeric and sortable in the preseason.
     """
     resid: dict[str, list[float]] = {t: [] for t in teams}
     for g in sorted((g for g in games if g.has_score), key=lambda g: g.order_key):
@@ -153,14 +169,19 @@ def team_table(
     *,
     ppoints: Mapping[str, float] | None = None,
 ) -> pd.DataFrame:
-    """One row per team: rank, rating, record, SOS, momentum (and PPoints when given)."""
+    """One row per team: rank, rating, record, SOS, momentum (and PPoints when given).
+
+    ``sos`` comes from completed games, or from the scheduled opponents until a team has played,
+    so the preseason table ranks schedules rather than zeros; ``sos_rank`` (nullable ``Int64``)
+    is missing only for a team with no games at all. ``momentum`` is 0 until the first game.
+    """
     recs = records(teams, games)
     sos = strength_of_schedule(teams, games, result.ratings)
     mom = momentum(teams, games, result, calibrator)
     sos_rank = {
         t: i + 1
         for i, (t, _) in enumerate(
-            sorted(((t, v) for t, v in sos.items() if not is_pool_team(t)), key=lambda kv: -kv[1])
+            sorted(((t, v) for t, v in sos.items() if not is_pool_team(t) and not math.isnan(v)), key=lambda kv: -kv[1])
         )
     }
     rows = []
@@ -174,13 +195,16 @@ def team_table(
             "losses": recs[team].losses,
             "rating": rating,
             "sos": sos[team],
-            "sos_rank": sos_rank[team],
+            "sos_rank": sos_rank.get(team),
             "momentum": mom[team],
         }
         if ppoints is not None:
             row["ppoints"] = float(ppoints.get(team, 0.0))
         rows.append(row)
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["sos_rank"] = df["sos_rank"].astype("Int64")
+    return df
 
 
 def schedule_table(
@@ -221,3 +245,63 @@ def schedule_table(
             )
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+# --- labels for the dashboard ----------------------------------------------------------------
+# Pure string helpers kept out of the Streamlit script so they can be unit-tested.
+
+
+def age_label(seconds: float) -> str:
+    """``"just now"``, ``"20 min ago"``, ``"3 h ago"`` or ``"2 d ago"`` for an age in seconds."""
+    seconds = max(0.0, float(seconds))
+    if seconds < 60:
+        return "just now"
+    minutes = seconds / 60
+    if minutes < 60:
+        return f"{minutes:.0f} min ago"
+    hours = minutes / 60
+    if hours < 48:
+        return f"{hours:.0f} h ago"
+    return f"{hours / 24:.0f} d ago"
+
+
+def freshness_label(year: int, info: CacheInfo | None) -> str:
+    """One line of data provenance for a season, from ``CFBDClient.freshness(year)``.
+
+    ``"2024: archived · final"`` for the committed archive, ``"2025: cached 3 h ago"`` for the
+    working cache (``" · final"`` appended once the season is finished) and
+    ``"2026: not cached · next load calls the API"`` when nothing is on disk.
+    """
+    if info is None:
+        return f"{year}: not cached · next load calls the API"
+    if info.tier == "archive":
+        return f"{year}: archived · final"
+    label = f"{year}: cached {age_label(info.age_seconds)}"
+    return label + " · final" if info.final else label
+
+
+def _eastern() -> tzinfo:
+    try:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo("America/New_York")
+    except Exception:  # no tz database on this machine: standard time is the better of two guesses
+        return timezone(timedelta(hours=-5))
+
+
+def kickoff_label(start_date: str | None) -> str | None:
+    """``"Sat 22 Nov"`` for an ISO-8601 kickoff such as CFBD's ``2025-11-22T20:30:00.000Z``.
+
+    CFBD stamps are UTC, so a 7:30 pm Eastern kickoff reads as 00:30 the next day; an aware
+    timestamp is shifted to US Eastern first so the label names the day fans know. A naive
+    stamp is used as given. ``None`` when there is no date or it does not parse.
+    """
+    if not start_date:
+        return None
+    try:
+        when = datetime.fromisoformat(str(start_date).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is not None:
+        when = when.astimezone(_eastern())
+    return f"{when:%a} {when.day} {when:%b}"

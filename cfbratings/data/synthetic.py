@@ -2,18 +2,21 @@
 
 Used by the test-suite, the ``--demo`` CLI mode and the dashboard's demo mode so that the
 whole pipeline runs without an API key. Each team gets a latent strength (in points);
-game margins are ``strength difference + home-field advantage + Gaussian noise``.
+game margins are ``strength difference + home-field advantage + Gaussian noise``. Teams
+also get deterministic brand colours (one hue family per conference) so that demo mode is
+not a wall of grey; there are no logos.
 """
 
 from __future__ import annotations
 
+import colorsys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
-from .schema import Game, Team, normalize_games
+from .schema import Game, Team, contrast_color, normalize_games
 
 _CONFERENCES = [
     "Atlantic Coast",
@@ -68,7 +71,9 @@ def synthetic_season(
     """Generate a plausible FBS-like season.
 
     * Teams are split evenly across conferences; conferences have their own strength offset.
-    * Weeks 1-3 are mostly non-conference, later weeks mostly in-conference.
+    * Weeks 1-3 are mostly non-conference, later weeks mostly in-conference. An opponent not yet
+      met this season is preferred, a rematch is hosted by the other side, and no team meets the
+      same opponent in consecutive weeks (it takes a bye instead).
     * ``postseason_games`` bowl games are added on neutral sites after the last week.
     * With ``carry_from`` the same teams return and each strength is ``carry_rho`` times
       last season's plus fresh noise, mimicking year-to-year persistence.
@@ -90,11 +95,20 @@ def synthetic_season(
             strength[t.school] = float(carry_rho * carry_from.true_strength[t.school] + rng.normal(0.0, innovation_sd))
     else:
         for i in range(n_teams):
-            c = i % n_conferences
-            name = f"{_PREFIXES[c]} {_team_label(i // n_conferences)}"
+            c, position = i % n_conferences, i // n_conferences
+            name = f"{_PREFIXES[c]} {_team_label(position)}"
             if name in strength:
                 raise ValueError(f"duplicate synthetic team name {name!r}")
-            teams.append(Team(school=name, conference=conf_names[c], classification="fbs"))
+            color = _team_color(c, n_conferences, position)
+            teams.append(
+                Team(
+                    school=name,
+                    conference=conf_names[c],
+                    classification="fbs",
+                    color=color,
+                    alt_color=contrast_color(color),
+                )
+            )
             strength[name] = float(conf_offset[c] + rng.normal(0.0, strength_sd))
 
     by_conf: dict[str, list[str]] = {}
@@ -111,7 +125,7 @@ def synthetic_season(
         nonlocal gid
         gid += 1
         expected = strength[home] - strength[away] + (0.0 if neutral else hfa)
-        margin = int(round(expected + rng.normal(0.0, noise_sd)))
+        margin = round(float(expected + rng.normal(0.0, noise_sd)))
         if margin == 0:
             margin = int(rng.choice([-1, 1]))
         base = int(rng.integers(10, 35))
@@ -136,26 +150,40 @@ def synthetic_season(
             }
         )
 
+    last_opponent: dict[str, str] = {}  # whom each team met the week before: no back-to-back rematches
     for week in range(1, weeks + 1):
         pool = [t for t in names if rng.random() > bye_rate]
         rng.shuffle(pool)
         in_conf_rate = 0.25 if week <= 3 else 0.85
         used: set[str] = set()
+        this_week: dict[str, str] = {}
         for home in pool:
             if home in used:
                 continue
             same = [t for t in by_conf[conf_of[home]] if t not in used and t != home and t in pool]
             other = [t for t in pool if t not in used and t != home and conf_of[t] != conf_of[home]]
             prefer_conf = rng.random() < in_conf_rate
-            primary = same if (prefer_conf and same) else (other or same)
-            fresh = [t for t in primary if (home, t) not in played and (t, home) not in played]
-            candidates = fresh or primary  # a rematch beats an unplanned bye
+            groups = (same, other) if (prefer_conf and same) else (other, same)
+            # In order of preference: an opponent never met this season (from the preferred group,
+            # then the other), then a rematch with anyone but last week's opponent, which still beats
+            # an unplanned bye; a back-to-back rematch is never scheduled. The random stream is
+            # consumed exactly as before, so a seed stays fixed.
+            previous = last_opponent.get(home)
+            tiers = (
+                *([t for t in group if (home, t) not in played and (t, home) not in played] for group in groups),
+                *([t for t in group if t != previous] for group in groups),
+            )
+            candidates = next((tier for tier in tiers if tier), [])
             if not candidates:
                 continue
             away = str(rng.choice(candidates))
+            if (home, away) in played:  # a rematch is hosted by the other side
+                home, away = away, home
             used.update({home, away})
             played.add((home, away))
+            this_week[home], this_week[away] = away, home
             add_game(week, home, away, neutral=rng.random() < neutral_rate)
+        last_opponent = this_week
 
     if postseason_games and (played_through is None or played_through >= weeks):
         ordered = sorted(names, key=lambda t: strength[t], reverse=True)
@@ -196,6 +224,25 @@ def synthetic_seasons(
         )
         out.append(prev)
     return out
+
+
+_GOLDEN = 0.618033988749895  # golden-ratio steps spread a sequence evenly over [0, 1)
+
+
+def _team_color(conf_index: int, n_conferences: int, position: int) -> str:
+    """A deterministic brand colour: one hue per conference, a different shade per team.
+
+    The hue is the conference's slot on the colour wheel; lightness and saturation step
+    through golden-ratio sequences keyed on the team's position within its conference, so
+    conference-mates share a hue family but stay distinguishable. The result depends only
+    on these indices, never on the random stream, so the same roster always gets the same
+    colours. ``alt_color`` (white or black) is chosen by :func:`contrast_color`.
+    """
+    hue = (conf_index / max(n_conferences, 1)) % 1.0
+    lightness = 0.26 + 0.30 * ((position * _GOLDEN) % 1.0)
+    saturation = 0.55 + 0.35 * (((position + 1) * _GOLDEN) % 1.0)
+    r, g, b = colorsys.hls_to_rgb(hue, lightness, saturation)
+    return f"#{round(255 * r):02x}{round(255 * g):02x}{round(255 * b):02x}"
 
 
 def _team_label(i: int) -> str:

@@ -31,3 +31,6 @@ htmlcov/
 .idea/
 *.swp
 .DS_Store
+
+# Claude Code agent worktrees (other branches checked out under the repo)
+.claude/worktrees/

@@ -5,7 +5,7 @@ import json
 import pytest
 
 from cfbratings.config import Settings
-from cfbratings.data.cache import JsonCache
+from cfbratings.data.cache import CacheInfo, JsonCache
 from cfbratings.data.cfbd import CFBDClient, CFBDError, consensus_spreads, load_season, load_seasons
 from cfbratings.data.schema import FCS_POOL
 
@@ -210,3 +210,50 @@ def test_suite_never_reaches_the_network(tmp_path):
     client = CFBDClient(Settings(api_key="k", cache_dir=tmp_path / "cache", archive_dir=tmp_path / "archive"))
     with pytest.raises(AssertionError, match="must not reach the network"):
         client.teams(2030)
+
+
+def test_cache_info_reports_tier_and_freshness(tmp_path, monkeypatch):
+    cache = JsonCache(tmp_path / "cache", ttl_hours=1.0, archive_dir=tmp_path / "archive")
+    assert cache.info("missing") is None
+    now = 1_000_000.0
+    monkeypatch.setattr("cfbratings.data.cache.time.time", lambda: now)
+    cache.put("live", {"a": 1})  # an in-progress season: expires
+    assert cache.info("live") == CacheInfo(cached_at=1_000_000, final=False, tier="cache")
+    assert cache.info("live").age_seconds == 0.0
+    monkeypatch.setattr("cfbratings.data.cache.time.time", lambda: now + 1800)
+    assert cache.info("live").age_seconds == 1800.0 and cache.get("live") == {"a": 1}
+    monkeypatch.setattr("cfbratings.data.cache.time.time", lambda: now + 7200)
+    assert cache.info("live") is None and cache.get("live") is None  # stale, and non-final payloads are never archived
+    assert cache.info("live", ignore_ttl=True) == CacheInfo(cached_at=1_000_000, final=False, tier="cache")
+    cache.put("done", [1, 2], final=True)  # a finished season: working copy plus archive
+    assert cache.info("done") == CacheInfo(cached_at=1_007_200, final=True, tier="cache")
+    assert cache.clear() == 2
+    archived = cache.info("done")
+    assert archived == CacheInfo(cached_at=1_007_200, final=True, tier="archive")
+    monkeypatch.setattr("cfbratings.data.cache.time.time", lambda: now + 10**7)
+    assert archived.age_seconds == pytest.approx(10**7 - 7200) and cache.info("done").tier == "archive"
+    assert cache.info("live") is None
+    cache.path("bad").write_text("{not json")
+    assert cache.info("bad") is None
+    assert JsonCache(tmp_path / "elsewhere", archive_dir=tmp_path / "archive").info("done").tier == "archive"
+    assert JsonCache(tmp_path / "nowhere").info("done") is None  # no archive configured
+
+
+def test_client_freshness_never_calls_the_api(tmp_path, monkeypatch):
+    monkeypatch.setattr(CFBDClient, "api_calls", 0)
+    archive = JsonCache(tmp_path / "cache", archive_dir=tmp_path / "archive")
+    archive.put("games_2023_regular", [], final=True)
+    archive.clear()
+    session = _FakeSession({"/games": []})
+    client = CFBDClient(
+        Settings(api_key="secret", cache_dir=tmp_path / "cache", archive_dir=tmp_path / "archive"), session=session
+    )
+    assert client.freshness(2030) is None  # unknown season: a games() call would hit the API ...
+    assert client.freshness(2023, "regular").tier == "archive"  # ... this one would not
+    assert session.calls == [] and CFBDClient.api_calls == 0  # neither question cost a request
+    client.games(2030)
+    fresh = client.freshness(2030)
+    assert fresh is not None and (fresh.tier, fresh.final) == ("cache", False) and fresh.age_seconds < 60
+    assert CFBDClient.api_calls == 1 and client.calls == ["/games {'year': 2030, 'seasonType': 'both'}"]
+    with pytest.raises(ValueError):
+        client.freshness(2030, "nope")
