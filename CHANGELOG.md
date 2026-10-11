@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Deployed at cfb.tzadek.ai
+- The dashboard is hosted at [cfb.tzadek.ai](https://cfb.tzadek.ai): a Railway service built from
+  the new root `Dockerfile` (python 3.12-slim, the package with its `app` extras, the dashboard,
+  `docs/METHODOLOGY.md`, the `.streamlit` theme and the committed `data/archive/`), behind
+  Cloudflare, the same arrangement as tzadek.ai. Railway detects the Dockerfile itself;
+  `.railway/railway.ts` (Railway's Infrastructure as Code, which replaces the deprecated
+  `railway.json`) declares the GitHub source, Streamlit's `/_stcore/health` health check and the
+  `cfb.tzadek.ai` domain. The container binds Railway's `$PORT` (8501 when unset), pins BLAS to one
+  thread and disables the file watcher. `.dockerignore` keeps tests, git metadata and `.env` out
+  of the build context.
+- `make docker` builds the image and runs it on <http://localhost:8501> with the local `.env`.
+- README: live link, a Deployment section with the one-time Railway and Cloudflare steps (custom
+  domain, CNAME, SSL mode **Full**), and what the container fetches (only the season in progress).
+
 ### Real data: five seasons archived, backtested and tuned (17 API calls)
 - `data/archive/` now ships the 2021–2025 CollegeFootballData seasons (teams, games and closing
   lines, gzipped), so every backtest, grid search and ranking below reproduces from a fresh clone

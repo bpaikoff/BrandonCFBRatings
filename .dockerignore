@@ -1,0 +1,28 @@
+# Everything the image does not need: the Dockerfile copies an explicit list, this keeps
+# the build context small and secrets out of it.
+.git/
+.github/
+.railway/
+.devcontainer/
+.claude/
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage*
+*.log
+tests/
+data/cache/
+docs/img/
+docs/BACKTEST_RESULTS.md
+CHANGELOG.md
+Makefile
+.pre-commit-config.yaml

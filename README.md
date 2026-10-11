@@ -10,12 +10,14 @@ backtesting harness and an interactive dashboard. Every model is calibrated to p
 win probabilities on the same scale, so you can ask the only question that matters: **which
 system actually predicts games?**
 
+**Live at [cfb.tzadek.ai](https://cfb.tzadek.ai)**
+
 | | |
 |---|---|
 | **Models** | Colley, Massey (ridge, recency-weighted), Elo (margin-of-victory), Bradley-Terry, Hybrid blend — all warm-startable from the previous season |
 | **Analytics** | strength of schedule, momentum in points, conference strength index, PPoints résumé score, weekly rank trajectories, exact rest-of-season record projections |
 | **Backtesting** | out-of-sample walk-forward evaluation across one or many seasons: accuracy, Brier, log loss, MAE/RMSE, calibration, home-team baseline, Vegas closing-line comparison, grid-search tuning |
-| **Interfaces** | `cfbratings` CLI with CSV/JSON export · Streamlit dashboard · importable Python package |
+| **Interfaces** | `cfbratings` CLI with CSV/JSON export · Streamlit dashboard ([cfb.tzadek.ai](https://cfb.tzadek.ai)) · importable Python package |
 | **Data** | [CollegeFootballData.com](https://collegefootballdata.com) API behind a two-tier cache (working cache plus a committed archive of finished seasons, so a season costs two or three API calls ever; the 2021–2025 seasons ship in the archive), FCS opponents pooled rather than dropped, or a synthetic multi-season generator for offline use |
 
 ## Quickstart
@@ -83,8 +85,9 @@ illustrative only.
 
 ## Dashboard
 
-`streamlit run apps/streamlit_app.py` opens a seven-tab app that works in demo mode without a key
-(`make app` pins BLAS to one thread, see below):
+The dashboard is live at **[cfb.tzadek.ai](https://cfb.tzadek.ai)** (see [Deployment](#deployment)).
+Locally, `streamlit run apps/streamlit_app.py` opens the same seven-tab app, which works in demo mode
+without a key (`make app` pins BLAS to one thread, see below):
 
 ![The Rankings tab on the real 2025 season: logos, rank changes since the previous week, and the sidebar's data-freshness line and API-call counter](docs/img/dashboard.png)
 
@@ -187,6 +190,50 @@ docs/METHODOLOGY.md    formulas
 tests/                 pytest suite (models, calibration, analytics, backtest, CLI, dashboard)
 ```
 
+## Deployment
+
+[cfb.tzadek.ai](https://cfb.tzadek.ai) is a [Railway](https://railway.app) service built from the
+[`Dockerfile`](Dockerfile) in this repo, behind Cloudflare, the same arrangement as
+[tzadek.ai](https://tzadek.ai). Railway detects the Dockerfile on its own; the container binds the
+`$PORT` Railway injects. [`.railway/railway.ts`](.railway/railway.ts) declares the rest (GitHub
+source, Streamlit's `/_stcore/health` health check, the custom domain) for Railway's
+Infrastructure as Code CLI; its predecessor `railway.json` is deprecated and ignored for new
+services.
+
+```bash
+docker build -t cfbratings .                                    # the image Railway builds
+docker run --rm -p 8501:8501 -e CFBD_API_KEY=... cfbratings     # http://localhost:8501
+```
+
+The image carries the committed `data/archive/` (2021–2025), so the only API calls a fresh
+container makes are the two or three for the season in progress, refreshed every
+`CFB_CACHE_TTL_HOURS`. The working cache under `data/cache/` is ephemeral unless a Railway volume
+is mounted at `/app/data/cache`.
+
+Setting it up (one-time, in the Railway and Cloudflare dashboards):
+
+1. Railway → **New Project → Deploy from GitHub repo** → `bpaikoff/BrandonCFBRatings`, branch
+   `master`. Railway finds the Dockerfile and builds it; every push to `master` redeploys. Set
+   **Settings → Deploy → Healthcheck Path** to `/_stcore/health`. (Equivalent from the CLI:
+   `railway link`, `railway config plan`, `railway config apply`, which reads `.railway/railway.ts`
+   and also attaches the domain from step 3.)
+2. Service → **Variables**: `CFBD_API_KEY` (the free key from
+   [collegefootballdata.com/key](https://collegefootballdata.com/key)). Without it the site starts
+   in demo mode. Optional: `STREAMLIT_THEME_BASE=dark`, any `CFB_*` override from the table above.
+3. Service → **Settings → Networking → Custom Domain** → `cfb.tzadek.ai`. Railway shows two DNS
+   records to create, a `CNAME` and a `TXT` verification record; both are required (with only the
+   CNAME the domain never verifies and serves a 404).
+4. Cloudflare → `tzadek.ai` zone → **DNS** → add both records exactly as shown: the `CNAME` with
+   name `cfb` and the Railway target, proxy status **Proxied**, and the `TXT` record. The zone's
+   SSL/TLS mode must be **Full** (Railway terminates TLS itself; **Flexible** would loop and
+   Railway advises against **Full (strict)**). Railway issues the certificate once the records resolve,
+   usually within a few minutes; if it stays on "Waiting for DNS update", switch the CNAME to
+   **DNS only** until the certificate is issued, then re-enable the proxy.
+
+Streamlit talks to the browser over a WebSocket, which Cloudflare proxies by default; no
+page rules are needed. `tzadek.ai` sends `Strict-Transport-Security` with `includeSubDomains`, so
+`cfb.tzadek.ai` is HTTPS-only from the first visit, which is what Railway serves.
+
 ## Development
 
 ```bash
@@ -195,6 +242,7 @@ make lint        # ruff check + format check
 make test        # pytest (~75 tests, ~1 min incl. dashboard smoke test)
 make test-fast   # skip the dashboard smoke test
 make app         # streamlit run apps/streamlit_app.py
+make docker      # build the deployment image and run it on http://localhost:8501
 ```
 
 CI runs lint and the test-suite on Python 3.11–3.13 for every push and pull request. Models and the backtest engine are validated against synthetic seasons with known team strengths, so the tests assert that each system recovers the true ordering and beats the home-team baseline out of sample; the parsers are also checked against a real trimmed 2024 payload. The suite never touches the network, even with a real `CFBD_API_KEY` in the environment.
