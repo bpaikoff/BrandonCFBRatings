@@ -15,7 +15,10 @@ export default defineRailway(() => {
     source: github("bpaikoff/BrandonCFBRatings", { branch: "master" }),
     healthcheck: "/_stcore/health",
     healthcheckTimeout: 120,
-    domains: ["cfb.tzadek.ai"],
+    // Pin the port instead of relying on the one Railway injects, so the domain's target port
+    // (asked for when the domain is added) and the port Streamlit binds can never disagree.
+    env: { PORT: "8501" },
+    domains: [{ domain: "cfb.tzadek.ai", port: 8501 }],
   });
 
   return project("cfb-ratings", {

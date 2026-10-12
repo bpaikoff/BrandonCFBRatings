@@ -9,7 +9,8 @@
   Cloudflare, the same arrangement as tzadek.ai. Railway detects the Dockerfile itself;
   `.railway/railway.ts` (Railway's Infrastructure as Code, which replaces the deprecated
   `railway.json`) declares the GitHub source, Streamlit's `/_stcore/health` health check and the
-  `cfb.tzadek.ai` domain. The container binds Railway's `$PORT` (8501 when unset), pins BLAS to one
+  `cfb.tzadek.ai` domain on port 8501, pinned through a `PORT` variable so the domain's target port
+  and the port Streamlit binds always agree. The container binds `$PORT` (8501 when unset), pins BLAS to one
   thread and disables the file watcher. `.dockerignore` keeps tests, git metadata and `.env` out
   of the build context.
 - `make docker` builds the image and runs it on <http://localhost:8501> with the local `.env`.

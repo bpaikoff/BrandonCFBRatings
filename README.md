@@ -218,11 +218,15 @@ Setting it up (one-time, in the Railway and Cloudflare dashboards):
    `railway link`, `railway config plan`, `railway config apply`, which reads `.railway/railway.ts`
    and also attaches the domain from step 3.)
 2. Service → **Variables**: `CFBD_API_KEY` (the free key from
-   [collegefootballdata.com/key](https://collegefootballdata.com/key)). Without it the site starts
-   in demo mode. Optional: `STREAMLIT_THEME_BASE=dark`, any `CFB_*` override from the table above.
-3. Service → **Settings → Networking → Custom Domain** → `cfb.tzadek.ai`. Railway shows two DNS
-   records to create, a `CNAME` and a `TXT` verification record; both are required (with only the
-   CNAME the domain never verifies and serves a 404).
+   [collegefootballdata.com/key](https://collegefootballdata.com/key)) and `PORT=8501`. Without
+   the key the site starts in demo mode. Pinning `PORT` means the port Streamlit binds and the
+   port the domain targets (next step) can never disagree. Optional: `STREAMLIT_THEME_BASE=dark`,
+   any `CFB_*` override from the table above.
+3. Service → **Settings → Networking → Custom Domain** → `cfb.tzadek.ai`, target port **8501**.
+   (Railway lists the ports it has seen the container listen on, so before the first successful
+   deploy the list is empty and the port has to be typed.) Railway then shows two DNS records to
+   create, a `CNAME` and a `TXT` verification record; both are required (with only the CNAME the
+   domain never verifies and serves a 404).
 4. Cloudflare → `tzadek.ai` zone → **DNS** → add both records exactly as shown: the `CNAME` with
    name `cfb` and the Railway target, proxy status **Proxied**, and the `TXT` record. The zone's
    SSL/TLS mode must be **Full** (Railway terminates TLS itself; **Flexible** would loop and
