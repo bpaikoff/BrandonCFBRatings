@@ -81,6 +81,10 @@ def test_dashboard_runs_in_demo_mode():
     assert at.sidebar.radio[0].value.startswith("Demo")  # no key in tests, so the dashboard never reaches CFBD
     labels = [tab.label for tab in at.tabs]
     assert any("Rankings" in label for label in labels) and any("Projections" in label for label in labels)
+    assert any("Playoff" in label for label in labels)
+    page = " ".join(m.value for m in at.markdown)
+    assert "First round" in page and "National Championship" in page  # the bracket is drawn
+    assert any("Projected bracket" in m.value for m in at.markdown)  # and the simulated one
     assert at.title[0].value.startswith("College Football Ratings")
     assert any("warm-started" in c.value for c in at.caption)
 

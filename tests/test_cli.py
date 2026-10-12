@@ -82,3 +82,17 @@ def test_cache_commands(capsys, tmp_path):
 def test_unknown_team_hint(capsys):
     with pytest.raises(SystemExit, match="Did you mean"):
         run(capsys, "team", "delta st")
+
+
+def test_cfp_command(capsys, tmp_path):
+    js = tmp_path / "cfp.json"
+    code, out = run(capsys, "--demo-weeks", "8", "cfp", "--method", "massey", "--sims", "40", "--top", "5", "--json", str(js))
+    assert code == 0 and "Playoff picture" in out and "Conference races:" in out
+    assert "If the season ended today" in out and "First round:" in out and "National Championship:" in out
+    assert "Rest of season simulated 40 times" in out and "Projected bracket" in out
+    rows = json.loads(js.read_text())
+    assert len(rows) == 64 and abs(sum(r["p_title"] for r in rows) - 1) < 1e-6
+    code, out = run(capsys, "cfp", "--no-ppoints", "--format", "2024", "--weights", "loss=1,champion=0.5")
+    assert code == 0 and "format 2024" in out and "per loss 1" in out
+    code, out = run(capsys, "conferences")
+    assert code == 0 and "strength_index" in out

@@ -23,14 +23,27 @@ import streamlit as st
 
 from cfbratings import __version__, settings
 from cfbratings.analytics import (
+    conference_strength,
     conference_table,
     freshness_label,
+    independents_table,
     kickoff_label,
     records,
     schedule_table,
     team_table,
 )
 from cfbratings.backtest import compare_methods
+from cfbratings.cfp import (
+    FORMATS,
+    ROUND_LABELS,
+    ROUNDS,
+    BracketOdds,
+    SeedingWeights,
+    format_for,
+    playoff_picture,
+    simulate_playoff,
+    standings_table,
+)
 from cfbratings.data import (
     CFBDClient,
     Game,
@@ -99,6 +112,17 @@ _CSS = """
 .chip img{width:32px;height:32px;padding:3px;box-sizing:border-box;border-radius:50%;object-fit:contain;
           flex:0 0 auto}
 .chips-vs{opacity:.7;font-size:.9rem}
+.bracket{display:flex;flex-wrap:wrap;gap:12px;margin:4px 0 14px;color:var(--text-color)}
+.round{flex:1 1 190px;min-width:180px;max-width:100%}
+.round-title{font-weight:600;font-size:.9rem;margin-bottom:4px}
+.round-note{font-size:.8rem;opacity:.7;margin:2px 0 8px}
+.game{border:1px solid rgba(128,128,128,.35);border-radius:8px;padding:6px 8px;margin:0 0 8px;
+      background:var(--secondary-background-color)}
+.game .t{display:flex;align-items:center;gap:6px;overflow-wrap:anywhere}
+.game .seed{opacity:.6;font-size:.8rem;min-width:1.6em}
+.game img{width:20px;height:20px;object-fit:contain;flex:0 0 auto}
+.game .p{margin-left:auto;font-size:.85rem;opacity:.8;flex:0 0 auto}
+.game .site{font-size:.75rem;opacity:.6;margin-top:2px}
 </style>
 """
 
@@ -231,6 +255,35 @@ def matchup_header(home: str, away: str, neutral: bool, teams: Mapping[str, Team
         ),
         unsafe_allow_html=True,
     )
+
+
+def bracket_html(odds: BracketOdds, logo_map: Mapping[str, str | None], byes: int) -> str:
+    """The bracket as four columns of game cards; later rounds show their most likely matchup."""
+
+    def side(seed, p: float | None) -> str:
+        logo = _img(logo_map.get(seed.team), "")
+        prob = f'<span class="p">{p:.0%}</span>' if p is not None else ""
+        return f'<div class="t"><span class="seed">{seed.seed}</span>{logo}<span>{html.escape(seed.team)}</span>{prob}</div>'
+
+    cols = []
+    for rnd in ROUNDS:
+        games = [g for g in odds.games if g.round == rnd]
+        if not games:
+            continue
+        cards = []
+        for g in games:
+            site = "neutral site" if g.neutral else f"at {html.escape(g.home.team)}"
+            cards.append(
+                f'<div class="game">{side(g.home, g.p_home)}{side(g.away, 1 - g.p_home)}'
+                f'<div class="site">{site}</div></div>'
+            )
+        note = f'<div class="round-note">Seeds 1-{byes} have a bye</div>' if rnd == "first" and byes else ""
+        if rnd != "first":
+            note = '<div class="round-note">most likely matchup</div>'
+        cols.append(
+            f'<div class="round"><div class="round-title">{ROUND_LABELS[rnd]}</div>{note}{"".join(cards)}</div>'
+        )
+    return f'<div class="bracket">{"".join(cols)}</div>'
 
 
 def table_height(n_rows: int, *, cap: int = 900) -> int:
@@ -434,6 +487,35 @@ def backtest_cached(methods: tuple[str, ...], start_week: int, params_json: str,
     return table, detail
 
 
+@st.cache_data(show_spinner="Scoring résumés…")
+def ppoints_cached(params_json: str, data_key: str, _names, _games, _ratings, _conf_map, _snaps):
+    return _ppoints(_names, _games, _ratings, _conf_map, _snaps)
+
+
+@st.cache_data(show_spinner="Building the playoff picture…")
+def playoff_cached(params_json: str, data_key: str, weights: tuple, fmt_year: int, _teams, _games, _result, _cal, _pp):
+    return playoff_picture(
+        _teams, _games, _result, _cal, ppoints=_pp, weights=SeedingWeights(*weights), fmt=format_for(fmt_year)
+    )
+
+
+@st.cache_data(show_spinner="Simulating the rest of the season…")
+def simulate_cached(
+    params_json: str, data_key: str, weights: tuple, fmt_year: int, n_sims: int, _teams, _games, _result, _cal, _pp
+):
+    return simulate_playoff(
+        _teams,
+        _games,
+        _result,
+        _cal,
+        ppoints=_pp,
+        weights=SeedingWeights(*weights),
+        fmt=format_for(fmt_year),
+        n_sims=n_sims,
+        seed=0,
+    )
+
+
 # --- sidebar -----------------------------------------------------------------------------------
 
 st.markdown(_CSS, unsafe_allow_html=True)
@@ -624,8 +706,17 @@ kpi_row(
     ]
 )
 
-tab_rank, tab_team, tab_proj, tab_conf, tab_match, tab_bt, tab_doc = st.tabs(
-    ["📊 Rankings", "🏟️ Team", "🔭 Projections", "🏆 Conferences", "🔮 Matchup", "🧪 Backtest", "📖 Methodology"]
+tab_rank, tab_team, tab_proj, tab_conf, tab_cfp, tab_match, tab_bt, tab_doc = st.tabs(
+    [
+        "📊 Rankings",
+        "🏟️ Team",
+        "🔭 Projections",
+        "🏆 Conferences",
+        "🏈 Playoff",
+        "🔮 Matchup",
+        "🧪 Backtest",
+        "📖 Methodology",
+    ]
 )
 
 # --- rankings ------------------------------------------------------------------------------------
@@ -906,6 +997,209 @@ with tab_conf:
         conference_dots(conf_df, title="Conference strength index (0.6 = weakest, 1.6 = strongest)", theme=theme),
         theme,
     )
+    ind_df = independents_table(result.ratings, conf_map, recs)
+    if not ind_df.empty:
+        st.markdown(
+            "**Independents** are not a conference: no conference schedule, standings, champion or automatic "
+            "playoff bid. Each is listed on its own; its index is its own rating placed on the conference scale, "
+            "which is how a résumé values a game against it."
+        )
+        ind_df = ind_df.assign(logo=logos(ind_df["team"]))
+        st.dataframe(
+            ind_df[["rank", "logo", "team", "record", "rating", "strength_index"]],
+            hide_index=True,
+            width="stretch",
+            height=table_height(len(ind_df)),
+            column_config={
+                "rank": st.column_config.NumberColumn("#", width="small"),
+                "logo": logo_col(),
+                "team": "Team",
+                "record": st.column_config.TextColumn("Record", width="small"),
+                "rating": st.column_config.NumberColumn(rating_label, format="%.3f"),
+                "strength_index": st.column_config.NumberColumn("Index", format="%.2f", help="On the 0.6-1.6 scale"),
+            },
+        )
+
+# --- playoff ----------------------------------------------------------------------------------------
+
+with tab_cfp:
+    fmt_years = sorted(FORMATS)
+    fmt_year = int(
+        st.radio(
+            "Rules",
+            fmt_years,
+            index=fmt_years.index(int(format_for(season).name)),
+            horizontal=True,
+            format_func=lambda y: f"{y} format",
+            help="2026: ACC, Big 12, Big Ten and SEC champions plus the best Group-of-Six team, straight seeding. "
+            "2025: the five best champions, straight seeding. 2024: the five best champions, byes to the four best champions.",
+        )
+    )
+    cfp_fmt = format_for(fmt_year).resolved(conference_strength(result.ratings, conf_map))
+    st.caption(
+        f"{cfp_fmt.summary}. First-round games at the higher seed's home (home-field advantage {cal.intercept:+.1f} "
+        "pts); every later round at a neutral site."
+    )
+    with st.expander("Seeding weights (the committee proxy)"):
+        st.caption(
+            "The committee is modelled as rating·z(rating) + résumé·z(PPoints) - loss·losses + champion bump. "
+            "The defaults are a heuristic reading of its record since 2014, not fitted values."
+        )
+        w1, w2, w3, w4 = st.columns(4)
+        w_rating = w1.slider("Power rating", 0.0, 2.0, 1.0, 0.05)
+        w_resume = w2.slider("Résumé (PPoints)", 0.0, 2.0, 0.5, 0.05)
+        w_loss = w3.slider("Per loss", 0.0, 1.0, 0.35, 0.05)
+        w_champ = w4.slider("Champion bump", 0.0, 1.0, 0.15, 0.05)
+    weights = (w_rating, w_resume, w_loss, w_champ)
+    cfp_snaps = snapshots_cached(method, params_json, data_key, names, games, not demo, ws)
+    cfp_pp = ppoints_cached(params_json, data_key, names, games, result.ratings, conf_map, cfp_snaps)
+    pic = playoff_cached(params_json, data_key, weights, fmt_year, teams, games, result, cal, cfp_pp)
+
+    st.subheader("Conference races")
+    race_rows = []
+    for conf in sorted(pic.champions, key=lambda c: (c not in cfp_fmt.power_conferences, c)):
+        ch = pic.champions[conf]
+        race_rows.append(
+            {
+                "conference": conf,
+                "power": conf in cfp_fmt.power_conferences,
+                "team": ch.team,
+                "status": "Champion" if ch.decided else "Leads",
+                "title_game": "" if ch.decided else f"vs {ch.opponent}",
+                "p_champion": 1.0 if ch.decided else ch.p_champion,
+            }
+        )
+    race_df = pd.DataFrame(race_rows)
+    if not race_df.empty:
+        race_df = race_df.assign(logo=logos(race_df["team"]))
+        st.dataframe(
+            percent_cols(race_df, ["p_champion"])[
+                ["conference", "power", "logo", "team", "status", "title_game", "p_champion"]
+            ],
+            hide_index=True,
+            width="stretch",
+            height=table_height(len(race_df)),
+            column_config={
+                "conference": "Conference",
+                "power": st.column_config.CheckboxColumn("Auto bid", help="Champion qualifies automatically"),
+                "logo": logo_col(),
+                "team": "Leader",
+                "status": st.column_config.TextColumn("Status", width="small"),
+                "title_game": st.column_config.TextColumn("Title game", help="The matchup the standings imply"),
+                "p_champion": pct_bar("Wins conference"),
+            },
+        )
+    with st.expander("Conference standings"):
+        stand_df = standings_table(pic.standings)
+        pick = st.selectbox("Conference  ", ["All", *sorted(pic.standings)])
+        if pick != "All":
+            stand_df = stand_df[stand_df["conference"] == pick]
+        if not stand_df.empty:
+            stand_df = stand_df.assign(logo=logos(stand_df["team"]))
+            st.dataframe(
+                stand_df[["conference", "place", "logo", "team", "conf_record", "record", "rating"]],
+                hide_index=True,
+                width="stretch",
+                height=table_height(len(stand_df)),
+                column_config={
+                    "conference": "Conference",
+                    "place": st.column_config.NumberColumn("#", width="small"),
+                    "logo": logo_col(),
+                    "team": "Team",
+                    "conf_record": st.column_config.TextColumn("Conf", width="small"),
+                    "record": st.column_config.TextColumn("Overall", width="small"),
+                    "rating": st.column_config.NumberColumn(rating_label, format="%.3f"),
+                },
+            )
+        st.caption("Conference record, then head-to-head among the tied, then overall record, then rating.")
+
+    st.subheader("If the season ended today")
+    fav, p_fav = pic.odds.title_favourite()
+    kpi_row(
+        [
+            (
+                "No. 1 seed",
+                pic.field[0].team if pic.field else NO_VALUE,
+                pic.field[0].conference if pic.field else None,
+            ),
+            ("Title favourite", fav, f"{p_fav:.0%} to win it all"),
+            (
+                "Last team in",
+                pic.field[-1].team if pic.field else NO_VALUE,
+                f"seed {pic.field[-1].seed}, {pic.field[-1].bid}" if pic.field else None,
+            ),
+            (
+                "First team out",
+                next((t for t in pic.ranking if t not in {s.team for s in pic.field}), NO_VALUE),
+                "by the committee proxy",
+            ),
+        ]
+    )
+    st.markdown(bracket_html(pic.odds, logo_map, cfp_fmt.byes), unsafe_allow_html=True)
+    odds_df = pic.odds.table.assign(logo=logos(pic.odds.table["team"]))
+    st.dataframe(
+        percent_cols(odds_df, ["p_quarter", "p_semi", "p_final", "p_title"])[
+            ["seed", "logo", "team", "conference", "bid", "p_quarter", "p_semi", "p_final", "p_title"]
+        ],
+        hide_index=True,
+        width="stretch",
+        height=table_height(len(odds_df)),
+        column_config={
+            "seed": st.column_config.NumberColumn("Seed", width="small"),
+            "logo": logo_col(),
+            "team": "Team",
+            "conference": "Conference",
+            "bid": st.column_config.TextColumn("Bid", width="small"),
+            "p_quarter": pct_bar("Quarterfinal"),
+            "p_semi": pct_bar("Semifinal"),
+            "p_final": pct_bar("Final"),
+            "p_title": pct_bar("Title"),
+        },
+    )
+    st.caption("Exact odds for this bracket from the calibrated win probabilities, every possible opponent weighted.")
+
+    st.subheader("Rest of season, simulated")
+    if n_unplayed == 0:
+        st.info("Every scheduled game has been played: the bracket above is the final one.")
+    else:
+        n_sims = int(st.select_slider("Simulations", [250, 500, 1000, 2000], value=500))
+        sim = simulate_cached(params_json, data_key, weights, fmt_year, n_sims, teams, games, result, cal, cfp_pp)
+        sim_df = sim.table.assign(logo=logos(sim.table["team"]))
+        sim_top = int(st.slider("Show top", 12, len(sim_df), min(25, len(sim_df)), 1, key="cfp_top"))
+        shown = sim_df.head(sim_top)
+        st.dataframe(
+            percent_cols(shown, ["p_champion", "p_playoff", "p_bye", "p_title"])[
+                ["logo", "team", "conference", "record", "p_champion", "p_playoff", "p_bye", "mean_seed", "p_title"]
+            ],
+            hide_index=True,
+            width="stretch",
+            height=table_height(len(shown)),
+            column_config={
+                "logo": logo_col(),
+                "team": "Team",
+                "conference": "Conference",
+                "record": st.column_config.TextColumn("Record", width="small"),
+                "p_champion": pct_bar("Wins conference"),
+                "p_playoff": pct_bar("Makes playoff"),
+                "p_bye": pct_bar("First-round bye"),
+                "mean_seed": st.column_config.NumberColumn("Avg seed", format="%.1f", help="When it makes the field"),
+                "p_title": pct_bar("Wins title"),
+            },
+        )
+        st.caption(
+            f"{sim.n_sims} simulations of the {n_unplayed} unplayed games: standings, title games, the committee "
+            "proxy and the bracket are settled in each, and the title odds average exact bracket odds."
+        )
+        st.markdown(
+            "**Projected bracket** (each conference's most likely champion, teams ranked by mean committee score)"
+        )
+        st.markdown(bracket_html(sim.projected_odds, logo_map, cfp_fmt.byes), unsafe_allow_html=True)
+        st.download_button(
+            "Download playoff projections CSV",
+            sim.table.to_csv(index=False).encode(),
+            f"playoff_{season}_{method}.csv",
+            "text/csv",
+        )
 
 # --- matchup ----------------------------------------------------------------------------------------
 

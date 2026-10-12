@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from .data.cache import CacheInfo
-from .data.schema import Game, Record, is_pool_team
+from .data.schema import INDEPENDENT, Game, Record, is_independent, is_pool_team
 from .models.base import RatingResult, Ratings
 from .predict import MarginCalibrator
 
@@ -90,6 +90,34 @@ def _band_scale(x: float, lo_src: float, hi_src: float, lo_dst: float, hi_dst: f
     return lo_dst + (x - lo_src) / (hi_src - lo_src) * (hi_dst - lo_dst)
 
 
+def _conference_raw(
+    ratings: Mapping[str, float],
+    conference_map: Mapping[str, str | None],
+    top_fraction: float,
+    mid_band: tuple[float, float],
+    elite_weight: float,
+    depth_weight: float,
+) -> dict[str, float]:
+    """Unscaled strength score per real conference; independents are not a conference."""
+    by_conf: dict[str, list[float]] = {}
+    for team, r in ratings.items():
+        conf = conference_map.get(team)
+        if is_pool_team(team) or is_independent(conf):
+            continue
+        by_conf.setdefault(str(conf), []).append(float(r))
+    raw: dict[str, float] = {}
+    for conf, vals in by_conf.items():
+        vals = sorted(vals)
+        n = len(vals)
+        cut = min(max(int(n * (1.0 - top_fraction)), 0), n - 1)
+        elite = median(vals[cut:])
+        lo = max(int(n * mid_band[0]), 0)
+        hi = max(min(int(n * mid_band[1]), n), lo + 1)
+        depth = median(vals[lo:hi])
+        raw[conf] = elite_weight * elite + depth_weight * depth
+    return raw
+
+
 def conference_strength(
     ratings: Mapping[str, float],
     conference_map: Mapping[str, str | None],
@@ -104,27 +132,45 @@ def conference_strength(
 
     The raw score blends the median of each conference's top ``top_fraction`` of teams
     (how good are its contenders) with the median of its middle band (how deep is it),
-    which is far less sensitive to one outlier program than a plain mean.
+    which is far less sensitive to one outlier program than a plain mean. Independents are
+    not a conference and get no index here: see :func:`independent_strength`.
     """
-    by_conf: dict[str, list[float]] = {}
-    for team, r in ratings.items():
-        if is_pool_team(team):
-            continue
-        by_conf.setdefault(conference_map.get(team) or "Independent", []).append(float(r))
-    raw: dict[str, float] = {}
-    for conf, vals in by_conf.items():
-        vals = sorted(vals)
-        n = len(vals)
-        cut = min(max(int(n * (1.0 - top_fraction)), 0), n - 1)
-        elite = median(vals[cut:])
-        lo = max(int(n * mid_band[0]), 0)
-        hi = max(min(int(n * mid_band[1]), n), lo + 1)
-        depth = median(vals[lo:hi])
-        raw[conf] = elite_weight * elite + depth_weight * depth
+    raw = _conference_raw(ratings, conference_map, top_fraction, mid_band, elite_weight, depth_weight)
     if not raw:
         return {}
     lo_src, hi_src = min(raw.values()), max(raw.values())
     return {c: _band_scale(v, lo_src, hi_src, band[0], band[1]) for c, v in raw.items()}
+
+
+def independent_strength(
+    ratings: Mapping[str, float],
+    conference_map: Mapping[str, str | None],
+    *,
+    top_fraction: float = 0.35,
+    mid_band: tuple[float, float] = (0.40, 0.60),
+    elite_weight: float = 0.65,
+    depth_weight: float = 0.35,
+    band: tuple[float, float] = (0.6, 1.6),
+) -> dict[str, float]:
+    """Each independent team on the conference strength scale, keyed by team.
+
+    An independent has no conference to borrow a strength index from, so it is placed on the
+    same ``band`` as its own one-team "conference": its rating is scaled exactly as a conference
+    score would be and clipped to the band. Notre Dame therefore counts like a top-conference
+    opponent in a résumé, and UConn like a weak one, instead of both getting a neutral factor.
+    """
+    raw = _conference_raw(ratings, conference_map, top_fraction, mid_band, elite_weight, depth_weight)
+    if not raw:
+        return {}
+    lo_src, hi_src = min(raw.values()), max(raw.values())
+    out: dict[str, float] = {}
+    for team, r in ratings.items():
+        if is_pool_team(team) or not is_independent(conference_map.get(team)):
+            continue
+        if team not in conference_map:
+            continue
+        out[team] = min(max(_band_scale(float(r), lo_src, hi_src, band[0], band[1]), band[0]), band[1])
+    return out
 
 
 def conference_table(
@@ -132,14 +178,11 @@ def conference_table(
     conference_map: Mapping[str, str | None],
     recs: Mapping[str, Record] | None = None,
 ) -> pd.DataFrame:
+    """One row per real conference; independents are listed by :func:`independents_table`."""
     strength = conference_strength(ratings, conference_map)
     rows = []
     for conf, idx in strength.items():
-        members = [
-            t
-            for t, c in conference_map.items()
-            if (c or "Independent") == conf and t in ratings and not is_pool_team(t)
-        ]
+        members = [t for t, c in conference_map.items() if c == conf and t in ratings and not is_pool_team(t)]
         vals = [ratings[t] for t in members]
         top = max(members, key=lambda t: ratings[t]) if members else ""
         row = {
@@ -158,6 +201,37 @@ def conference_table(
     if df.empty:
         return df
     return df.sort_values("strength_index", ascending=False).reset_index(drop=True)
+
+
+def independents_table(
+    ratings: Mapping[str, float],
+    conference_map: Mapping[str, str | None],
+    recs: Mapping[str, Record] | None = None,
+) -> pd.DataFrame:
+    """One row per independent team: rank, rating, record and its strength on the conference scale."""
+    rank = {
+        t: i + 1
+        for i, (t, _) in enumerate(
+            sorted(((t, v) for t, v in ratings.items() if not is_pool_team(t)), key=lambda kv: (-kv[1], kv[0]))
+        )
+    }
+    strength = independent_strength(ratings, conference_map)
+    rows = []
+    for team, conf in conference_map.items():
+        if is_pool_team(team) or team not in ratings or not is_independent(conf):
+            continue
+        row = {
+            "team": team,
+            "rank": rank.get(team),
+            "rating": float(ratings[team]),
+            "strength_index": strength.get(team),
+        }
+        if recs is not None and team in recs:
+            row["record"] = str(recs[team])
+            row["wins"], row["losses"] = recs[team].wins, recs[team].losses
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    return df.sort_values("rank").reset_index(drop=True) if not df.empty else df
 
 
 def team_table(
@@ -189,7 +263,7 @@ def team_table(
         row = {
             "rank": rank,
             "team": team,
-            "conference": (conference_map or {}).get(team) or "Independent",
+            "conference": (conference_map or {}).get(team) or INDEPENDENT,
             "record": str(recs[team]),
             "wins": recs[team].wins,
             "losses": recs[team].losses,
