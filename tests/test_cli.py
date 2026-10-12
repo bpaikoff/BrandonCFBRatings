@@ -86,7 +86,9 @@ def test_unknown_team_hint(capsys):
 
 def test_cfp_command(capsys, tmp_path):
     js = tmp_path / "cfp.json"
-    code, out = run(capsys, "--demo-weeks", "8", "cfp", "--method", "massey", "--sims", "40", "--top", "5", "--json", str(js))
+    code, out = run(
+        capsys, "--demo-weeks", "8", "cfp", "--method", "massey", "--sims", "40", "--top", "5", "--json", str(js)
+    )
     assert code == 0 and "Playoff picture" in out and "Conference races:" in out
     assert "If the season ended today" in out and "First round:" in out and "National Championship:" in out
     assert "Rest of season simulated 40 times" in out and "Projected bracket" in out
