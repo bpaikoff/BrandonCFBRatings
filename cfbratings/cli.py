@@ -21,8 +21,9 @@ from typing import Any
 import pandas as pd
 
 from . import __version__
-from .analytics import conference_table, schedule_table, team_table
+from .analytics import conference_table, independents_table, schedule_table, team_table
 from .backtest import compare_methods, grid_search
+from .cfp import FORMATS, SeedingWeights, bracket_lines, format_for, playoff_picture, simulate_playoff
 from .config import Settings
 from .config import settings as default_settings
 from .data import CFBDClient, CFBDError, Game, JsonCache, Team, load_seasons, synthetic_seasons
@@ -222,10 +223,15 @@ def cmd_conferences(args: argparse.Namespace) -> int:
     result = make_model(args.method, s, **params).fit(names, games, prior=ws.prior)
     from .analytics import records  # local import keeps the module namespace tidy
 
-    df = conference_table(result.ratings, conf_map, records(names, games))
+    recs = records(names, games)
+    df = conference_table(result.ratings, conf_map, recs)
     df = df[df["conference"] != "FCS"]
     print(f"\nConference strength — {MODEL_LABELS.get(args.method, args.method)} — {season} — {source} — {note}\n")
     _print_df(df)
+    ind = independents_table(result.ratings, conf_map, recs)
+    if not ind.empty:
+        print("\nIndependents (not a conference; strength_index is the team's own rating on the conference scale)\n")
+        _print_df(ind)
     _export(df, args.csv, args.json)
     return 0
 
@@ -320,6 +326,62 @@ def cmd_project(args: argparse.Namespace) -> int:
     ]
     _print_df(df[cols].head(args.top))
     _export(df, args.csv, args.json)
+    return 0
+
+
+def cmd_cfp(args: argparse.Namespace) -> int:
+    s = _settings(args)
+    teams, games, source = load_data(args, s)
+    names = [t.school for t in teams]
+    conf_map = _conference_map(teams)
+    params = parse_params(args.param)
+    season, games, ws, note = season_view(s, teams, games, args.method, params)
+    model = make_model(args.method, s, **params)
+    result = model.fit(names, games, prior=ws.prior)
+    cal = MarginCalibrator.fit_cv(
+        model, names, games, fallback_hfa=s.home_field_adv, prior=ws.prior, fallback=ws.calibrator
+    )
+    pp = None
+    if not args.no_ppoints:
+        snaps = weekly_snapshots(
+            args.method, names, games, settings=s, use_cache=not args.demo, prior=ws.prior, **params
+        )
+        pp = _ppoints(names, games, result.ratings, conf_map, snaps)
+    weights = SeedingWeights.parse(args.weights)
+    fmt = FORMATS[args.format] if args.format else format_for(season)
+    pic = playoff_picture(teams, games, result, cal, ppoints=pp, weights=weights, fmt=fmt)
+    label = MODEL_LABELS.get(args.method, args.method)
+    print(f"\nPlayoff picture — {label} — {season} — {source} — {note}")
+    print(f"format {pic.fmt.name}: {pic.fmt.summary}")
+    print(
+        f"seeding weights: rating {weights.rating:g}, résumé {weights.resume:g}, "
+        f"per loss {weights.loss:g}, champion {weights.champion:g}\n"
+    )
+    print("Conference races:")
+    for conf in sorted(pic.champions, key=lambda c: (c not in pic.fmt.power_conferences, c)):
+        ch = pic.champions[conf]
+        if ch.decided:
+            print(f"  {conf}: {ch.team} (champion)")
+        else:
+            print(f"  {conf}: {ch.team} ({ch.p_champion:.0%} to beat {ch.opponent} in the title game)")
+    n_left = sum(1 for g in games if not g.has_score)
+    print(f"\nIf the season ended today ({n_left} games still to play):")
+    print("\n".join("  " + line for line in bracket_lines(pic.odds)))
+    print()
+    cols = ["seed", "team", "conference", "bid", "p_quarter", "p_semi", "p_final", "p_title"]
+    _print_df(pic.odds.table[cols])
+    table = pic.odds.table
+    if args.sims:
+        sim = simulate_playoff(
+            teams, games, result, cal, ppoints=pp, weights=weights, fmt=fmt, n_sims=args.sims, seed=args.seed
+        )
+        print(f"\nRest of season simulated {sim.n_sims} times:\n")
+        cols = ["team", "conference", "record", "p_champion", "p_playoff", "p_bye", "mean_seed", "p_title"]
+        _print_df(sim.table[cols].head(args.top))
+        print("\nProjected bracket (modal champions, mean committee score):")
+        print("\n".join("  " + line for line in bracket_lines(sim.projected_odds)))
+        table = sim.table
+    _export(table, args.csv, args.json)
     return 0
 
 
@@ -512,6 +574,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--conference", help="only show one conference")
     add_export_args(p)
     p.set_defaults(func=cmd_project)
+
+    p = sub.add_parser("cfp", help="the Playoff picture: conference races, bracket, odds (--sims for projections)")
+    add_model_args(p)
+    p.add_argument("--sims", type=int, default=0, help="simulate the rest of the season this many times")
+    p.add_argument("--weights", help="committee proxy, e.g. rating=1,resume=0.5,loss=0.35,champion=0.15")
+    p.add_argument("--format", type=int, choices=sorted(FORMATS), help="playoff rules to apply (default: the season's)")
+    p.add_argument("--top", type=int, default=25, help="rows of the simulated table to print")
+    p.add_argument("--no-ppoints", action="store_true", help="rank without the résumé term (faster)")
+    add_export_args(p)
+    p.set_defaults(func=cmd_cfp)
 
     p = sub.add_parser("predict", help="spread and win probability for a matchup")
     p.add_argument("home")

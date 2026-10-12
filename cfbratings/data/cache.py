@@ -56,6 +56,14 @@ class JsonCache:
             return None
         return self.archive_dir / f"{_SAFE.sub('_', key)}.json.gz"
 
+    def archived_years(self, season_type: str = "both") -> list[int]:
+        """Seasons whose ``games`` payload the archive holds, ascending (no file is opened)."""
+        if self.archive_dir is None or not self.archive_dir.is_dir():
+            return []
+        pattern = re.compile(rf"^games_(\d{{4}})_{re.escape(season_type)}\.json\.gz$")
+        years = {int(m.group(1)) for f in self.archive_dir.iterdir() if (m := pattern.match(f.name))}
+        return sorted(years)
+
     # --- reads -----------------------------------------------------------------------
     def get(self, key: str, *, ignore_ttl: bool = False) -> Any | None:
         """Return the cached payload or ``None`` when missing / stale / unreadable."""

@@ -15,6 +15,11 @@ from typing import Any
 REGULAR = "regular"
 POSTSEASON = "postseason"
 FCS_POOL = "FCS (pooled)"
+INDEPENDENT = "Independent"  # display label for a team with no conference
+# CFBD's label for Notre Dame and company, plus the labels this package has used for them.
+_INDEPENDENT_LABELS = frozenset({"FBS Independents", "Independents", INDEPENDENT})
+# Conference games by CFBD's flag that the conference itself counts as non-conference.
+_NOT_CONFERENCE_GAMES = frozenset({frozenset({"Army", "Navy"})})
 
 _HEX6 = re.compile(r"[0-9a-f]{6}")
 _HEX3 = re.compile(r"[0-9a-f]{3}")
@@ -22,6 +27,16 @@ _HEX3 = re.compile(r"[0-9a-f]{3}")
 
 def is_pool_team(name: str | None) -> bool:
     return name == FCS_POOL
+
+
+def is_independent(conference: str | None) -> bool:
+    """``True`` for a team with no conference (CFBD's ``"FBS Independents"`` or nothing at all).
+
+    Independents are not a conference: they play no conference schedule, have no standings,
+    no champion and no automatic playoff bid, so everything that works per conference skips
+    them and treats each one on its own.
+    """
+    return not conference or conference in _INDEPENDENT_LABELS
 
 
 def _pick(d: Mapping[str, Any], *keys: str, default: Any = None) -> Any:
@@ -141,6 +156,8 @@ class Game:
     start_date: str | None = None
     home_name: str | None = None  # original school when ``home`` is a pooled pseudo-team
     away_name: str | None = None
+    conference_game: bool | None = None  # CFBD's ``conferenceGame`` flag when the payload has it
+    notes: str | None = None  # CFBD's ``notes``: "SEC Championship", "College Football Playoff ..."
 
     # --- derived -----------------------------------------------------------------
     @property
@@ -183,6 +200,29 @@ class Game:
 
     @property
     def is_conference_game(self) -> bool:
+        """A game that counts in the conference standings.
+
+        CFBD's ``conferenceGame`` flag decides when present (it is ``False`` for a conference
+        title game, which is right: the standings are settled before it); otherwise two teams
+        of the same conference. Two independents never play a conference game, and Army-Navy
+        is the one flagged game its conference does not count.
+        """
+        if is_independent(self.home_conference) or is_independent(self.away_conference):
+            return False
+        if frozenset({self.home, self.away}) in _NOT_CONFERENCE_GAMES:
+            return False
+        if self.conference_game is not None:
+            return bool(self.conference_game)
+        return bool(self.home_conference) and self.home_conference == self.away_conference
+
+    @property
+    def is_conference_championship(self) -> bool:
+        """A conference title game: CFBD notes it as "<Conference> Championship" (regular season)."""
+        if self.season_type == POSTSEASON or not self.notes:
+            return False
+        note = self.notes.strip().lower()
+        if not note.endswith("championship") or note.startswith(("fcs ", "division ", "national ")):
+            return False
         return bool(self.home_conference) and self.home_conference == self.away_conference
 
     @property
@@ -229,6 +269,8 @@ class Game:
             home_conference=_pick(d, "homeConference", "home_conference"),
             away_conference=_pick(d, "awayConference", "away_conference"),
             start_date=_pick(d, "startDate", "start_date"),
+            conference_game=(None if (cg := _pick(d, "conferenceGame", "conference_game")) is None else bool(cg)),
+            notes=_pick(d, "notes"),
         )
 
 

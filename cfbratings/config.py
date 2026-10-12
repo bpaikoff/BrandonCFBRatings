@@ -45,6 +45,9 @@ class Settings:
     timeout: int = 20
     year: int = field(default_factory=default_season)
     season_type: str = "both"  # "regular" | "postseason" | "both"
+    # A dashboard anyone can open (cfb.tzadek.ai): no refresh button, seasons limited to the
+    # archive plus the one in progress, so visitors cannot spend the API key's monthly budget.
+    public_dashboard: bool = False
 
     # --- shared ----------------------------------------------------------------
     home_field_adv: float = 2.5  # points; applied only to non-neutral games
@@ -103,6 +106,7 @@ class Settings:
             timeout=int(_env("CFB_TIMEOUT", str(base.timeout))),
             year=int(_env("CFB_YEAR", str(base.year))),
             season_type=_env("CFB_SEASON_TYPE", base.season_type),
+            public_dashboard=_env("CFB_PUBLIC_DASHBOARD", "0").strip().lower() in {"1", "true", "yes"},
             home_field_adv=_env_float("CFB_HFA", base.home_field_adv),
             colley_prior_strength=_env_float("CFB_COLLEY_PRIOR", base.colley_prior_strength),
             massey_ridge_lambda=_env_float("CFB_MASSEY_LAMBDA", base.massey_ridge_lambda),

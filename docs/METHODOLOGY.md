@@ -226,3 +226,51 @@ are exact rather than Monte Carlo estimates. The projected record is
 $(\text{wins} + \sum_g p_g,\ \text{losses} + n - \sum_g p_g)$. Games are treated as
 independent given the ratings; correlation through shared uncertainty in the ratings
 themselves is ignored, which makes the tails slightly too narrow late in the season.
+
+## 7. Conferences, independents and the Playoff
+
+**Conference strength** (section 3) is computed over real conferences only. An independent
+(CFBD's *FBS Independents*: Notre Dame, UConn) is not a conference: it plays no conference
+schedule, has no standings, no champion and no automatic playoff bid. In a résumé score an
+independent opponent is placed on the conference strength scale by its *own* rating, scaled
+exactly as a conference score would be and clipped to the 0.6–1.6 band, so beating Notre Dame
+counts like beating a top-conference opponent and beating UConn like beating a weak one.
+
+**Standings** use conference games only, taken from CFBD's `conferenceGame` flag (Army–Navy,
+flagged but not counted by the American, is excluded). Teams are ordered by conference record,
+then head-to-head among the tied, then overall record, then rating; a conference's own full
+tie-breaker policy is not reproduced. A title game is the regular-season game CFBD notes as
+"*Conference* Championship"; it is not a conference game, so the standings are settled before
+it and its winner is the champion. Until it is played the top two of the standings meet in a
+projected title game, at a neutral site for the power conferences and at the leader's home
+otherwise, and the favourite is the projected champion.
+
+**The committee proxy** ranks teams by
+
+$$
+S_i = w_r\, z(\text{rating}_i) + w_p\, z(\text{PPoints}_i) - w_\ell\, \text{losses}_i + w_c\,[i \text{ is a champion}],
+$$
+
+with $z$ the standard score over FBS teams. The default weights
+$(w_r, w_p, w_\ell, w_c) = (1, 0.5, 0.35, 0.15)$ are a heuristic reading of how the committee has
+ranked since 2014 (losses first, then résumé, then a modest bump for a title); they are
+parameters exposed in the CLI and the dashboard, not fitted values.
+
+**The field and the bracket** follow the season's rules. For 2026: twelve teams; the champions
+of the ACC, Big 12, Big Ten and SEC qualify; the highest-ranked team of the other conferences
+qualifies, champion or not; seven at-large places go by ranking; seeding is straight, so the
+four highest-ranked teams receive the byes whatever their conference status. Seeds 5–12 meet
+(5–12, 8–9, 6–11, 7–10) at the higher seed's home, with the home-field advantage of section 2;
+the quarterfinals (1 vs 8/9, 4 vs 5/12, 3 vs 6/11, 2 vs 7/10), semifinals and final are neutral.
+The 2024 (five best champions, byes to the four best champions) and 2025 (five best champions,
+straight seeding) formats are kept for the archived seasons. A demo season maps the rules onto
+its own strongest conferences.
+
+**Odds.** For a fixed bracket the probability that a team reaches each round is computed
+exactly: $P(i \text{ wins a game}) = P(i \text{ reaches it}) \sum_j P(j \text{ reaches it})\,p_{ij}$ over
+every possible opponent $j$, with $p_{ij}$ the calibrated win probability for that site. The
+rest-of-season projection is a Monte Carlo: each simulation samples every unplayed game from
+its win probability (ratings held fixed, PPoints kept at its current value), settles the
+standings and the title games, ranks with the committee proxy on the simulated records, selects
+and seeds the field, and then takes the exact bracket odds for that field, so the title
+probabilities average exact numbers rather than coin flips.

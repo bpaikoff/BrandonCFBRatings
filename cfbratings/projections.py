@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from .analytics import records
-from .data.schema import Game, Record, is_pool_team
+from .data.schema import INDEPENDENT, Game, Record, is_pool_team
 from .models.base import RatingResult
 from .predict import MarginCalibrator
 
@@ -127,7 +127,7 @@ def projection_table(
         row = {
             "rank": rank.get(team),
             "team": team,
-            "conference": (conference_map or {}).get(team) or "Independent",
+            "conference": (conference_map or {}).get(team) or INDEPENDENT,
             "record": str(proj.record),
             "wins": proj.record.wins,
             "losses": proj.record.losses,

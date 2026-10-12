@@ -15,7 +15,8 @@ system actually predicts games?**
 | | |
 |---|---|
 | **Models** | Colley, Massey (ridge, recency-weighted), Elo (margin-of-victory), Bradley-Terry, Hybrid blend — all warm-startable from the previous season |
-| **Analytics** | strength of schedule, momentum in points, conference strength index, PPoints résumé score, weekly rank trajectories, exact rest-of-season record projections |
+| **Analytics** | strength of schedule, momentum in points, conference strength index (independents handled on their own), PPoints résumé score, weekly rank trajectories, exact rest-of-season record projections |
+| **Playoff** | conference standings and title-game projections, a committee-style ranking with adjustable seeding weights, the 12-team bracket under the season's rules (2024, 2025, 2026 formats), exact bracket odds and a rest-of-season Monte Carlo for playoff, bye and title probabilities |
 | **Backtesting** | out-of-sample walk-forward evaluation across one or many seasons: accuracy, Brier, log loss, MAE/RMSE, calibration, home-team baseline, Vegas closing-line comparison, grid-search tuning |
 | **Interfaces** | `cfbratings` CLI with CSV/JSON export · Streamlit dashboard ([cfb.tzadek.ai](https://cfb.tzadek.ai)) · importable Python package |
 | **Data** | [CollegeFootballData.com](https://collegefootballdata.com) API behind a two-tier cache (working cache plus a committed archive of finished seasons, so a season costs two or three API calls ever; the 2021–2025 seasons ship in the archive), FCS opponents pooled rather than dropped, or a synthetic multi-season generator for offline use |
@@ -47,6 +48,7 @@ streamlit run apps/streamlit_app.py
 | `cfbratings conferences` | conference strength index |
 | `cfbratings predict "Ohio State" "Michigan" [--neutral]` | spread and win probability from every model |
 | `cfbratings project` | rest-of-season projections: projected record, P(6+/10+ wins), P(win out), next opponent |
+| `cfbratings cfp` | the Playoff picture: conference races, the bracket if the season ended today with exact odds, and (`--sims N`) simulated playoff, bye and title probabilities; `--weights rating=1,resume=0.5,loss=0.35,champion=0.15` sets the committee proxy, `--format 2024\|2025\|2026` the rules |
 | `cfbratings backtest` | walk-forward comparison of all methods (`--methods`, `--start-week`, `--by-week`, `--calibration`, `--lines` for a Vegas comparison, `--predictions-csv`) |
 | `cfbratings tune --method elo --grid "k=15,25,40;hfa=2,2.5,3"` | grid search hyper-parameters against any backtest metric |
 | `cfbratings snapshot` | compute and cache weekly rating snapshots |
@@ -86,7 +88,7 @@ illustrative only.
 ## Dashboard
 
 The dashboard is live at **[cfb.tzadek.ai](https://cfb.tzadek.ai)** (see [Deployment](#deployment)).
-Locally, `streamlit run apps/streamlit_app.py` opens the same seven-tab app, which works in demo mode
+Locally, `streamlit run apps/streamlit_app.py` opens the same eight-tab app, which works in demo mode
 without a key (`make app` pins BLAS to one thread, see below):
 
 ![The Rankings tab on the real 2025 season: logos, rank changes since the previous week, and the sidebar's data-freshness line and API-call counter](docs/img/dashboard.png)
@@ -94,7 +96,8 @@ without a key (`make app` pins BLAS to one thread, see below):
 * **Rankings** – logos, rank change since the previous week (▲ 3, ▼ 2, new), sortable table with a conference filter, ranked bar chart coloured by team or by conference, rating-vs-SOS scatter, CSV download
 * **Team** – header strip in the team's colours, schedule with expected margin and win probability per game, opponent logos, the next game with its kickoff day and win probability, week-by-week rank trajectory (compare up to eight teams; look-alike colours get dashed lines), projected record and win-total distribution
 * **Projections** – every team's remaining schedule turned into exact win-total odds (bowl eligibility, 10+ wins, win out) with the next opponent
-* **Conferences** – robust strength index with aggregate records
+* **Conferences** – robust strength index with aggregate records; independents listed on their own (they are not a conference)
+* **Playoff** – conference races and projected title games, the committee-style ranking with seeding-weight sliders, the bracket if the season ended today with exact round-by-round odds, and a rest-of-season simulation for playoff, bye and national-title probabilities
 * **Matchup** – pick any two teams for every model's spread and win probability plus a consensus line
 * **Backtest** – run the walk-forward evaluation live: metrics table, per-week accuracy (weeks with fewer than five games hidden), reliability diagram, by-season tables, downloadable predictions
 * **Methodology** – the formulas, rendered from `docs/METHODOLOGY.md`
@@ -160,6 +163,7 @@ Settings come from environment variables or a `.env` file (see [`.env.example`](
 | `CFB_CACHE_DIR` / `CFB_CACHE_TTL_HOURS` | `data/cache` / `6` | working JSON cache (finished seasons never expire) |
 | `CFB_ARCHIVE_DIR` | `data/archive` | gzipped payloads of finished seasons, committed to the repo so a fresh clone never re-downloads them |
 | `STREAMLIT_THEME_BASE` | `light` (from `.streamlit/config.toml`) | `dark` switches the dashboard, its logos and charts to the dark theme |
+| `CFB_PUBLIC_DASHBOARD` | `0` (`1` in the Docker image) | public-site mode: hides the dashboard's **Refresh API cache** button and limits the season picker to the archived seasons plus the one in progress, so visitors cannot spend the key's monthly call budget |
 | `CFB_HFA` | `2.5` | home-field advantage in points (never applied on neutral sites) |
 | `CFB_COLLEY_PRIOR` | `2.0` | Colley pseudo-games |
 | `CFB_MASSEY_LAMBDA` / `CFB_MASSEY_MAX_MARGIN` / `CFB_MASSEY_HALF_LIFE` / `CFB_MASSEY_PRIOR_LAMBDA` | `1.0` / `50` / `0` / `3.0` | Massey ridge, margin cap, recency half-life (weeks), ridge toward a preseason prior |
@@ -179,6 +183,7 @@ cfbratings/
   predict.py         MarginCalibrator: ratings → spreads & win probabilities
   priors.py          preseason priors / warm starts chained across seasons
   projections.py     exact rest-of-season win-total distributions
+  cfp.py             conference standings, champions, committee proxy, the Playoff bracket and its odds
   analytics.py       records, SOS, momentum, conference strength, team/schedule tables
   ppoints.py         PPoints résumé metric
   snapshots.py       weekly rating snapshots (cached)
@@ -206,9 +211,14 @@ docker run --rm -p 8501:8501 -e CFBD_API_KEY=... cfbratings     # http://localho
 ```
 
 The image carries the committed `data/archive/` (2021–2025), so the only API calls a fresh
-container makes are the two or three for the season in progress, refreshed every
-`CFB_CACHE_TTL_HOURS`. The working cache under `data/cache/` is ephemeral unless a Railway volume
-is mounted at `/app/data/cache`.
+container makes are the two for the season in progress: the roster once, the games again after
+every `CFB_CACHE_TTL_HOURS` (6 by default, so at most four games calls a day; every visitor shares
+the same cache). The image also sets `CFB_PUBLIC_DASHBOARD=1`: the **Refresh API cache** button is
+hidden and the season picker is limited to the archived seasons plus the current one, so no
+visitor can re-download seasons or reach for years the archive does not hold. That keeps the site
+well inside the free tier's 1 000 calls a month (a key that exceeds it is disabled until the next
+month). The working cache under `data/cache/` is ephemeral unless a Railway volume is mounted at
+`/app/data/cache`; without one, each deploy costs those two calls again.
 
 Setting it up (one-time, in the Railway and Cloudflare dashboards):
 

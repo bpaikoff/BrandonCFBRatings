@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### The Playoff, and independents handled as what they are
+- New `cfbratings.cfp`: conference standings from CFBD's `conferenceGame` flag (head-to-head,
+  overall record and rating as tie-breakers), champions from the title games CFBD notes as
+  "<Conference> Championship" or, until they are played, from a projected title game between the
+  standings' top two; a committee-style ranking (`SeedingWeights`: power rating, PPoints résumé,
+  a penalty per loss, a champion bump, all adjustable); the field and the bracket under the
+  season's rules (`CFPFormat`: 2026 with the four power champions plus the best Group-of-Six team
+  and straight seeding, 2025 and 2024 kept for the archive); exact round-by-round odds for a fixed
+  bracket (`bracket_odds`, checked against brute force) and a rest-of-season Monte Carlo
+  (`simulate_playoff`) that settles standings and title games, ranks, seeds, and averages exact
+  bracket odds for playoff, bye, seed and title probabilities.
+- `cfbratings cfp` prints the conference races, the bracket if the season ended today and its
+  odds, and with `--sims N` the simulated probabilities; the dashboard gains a **Playoff** tab with
+  the same plus seeding-weight sliders and a drawn bracket.
+- Independents (`is_independent`, CFBD's "FBS Independents") are no longer treated as a
+  conference anywhere: `conference_strength` and `conference_table` leave them out,
+  `independents_table` lists them on their own, and PPoints scales an independent opponent by its
+  own rating on the conference strength scale (`independent_strength`) instead of a neutral factor.
+  `Game.is_conference_game` uses CFBD's flag, never counts two independents or Army-Navy, and
+  `Game.is_conference_championship` identifies title games; `Game` carries `conference_game` and
+  `notes`.
+- Methodology section 7 describes all of it.
+
+### Public-dashboard mode (API budget)
+- `CFB_PUBLIC_DASHBOARD=1` (`Settings.public_dashboard`, set in the Docker image for cfb.tzadek.ai)
+  hides the sidebar's **Refresh API cache** button and limits the season picker to the seasons the
+  archive holds plus the one in progress, with the warm-start depth clamped to match. Visitors can
+  no longer re-download seasons or request years the archive lacks, so the deployed site spends at
+  most the current season's games calls (one per `CFB_CACHE_TTL_HOURS`) against the key's 1 000
+  calls a month. `JsonCache.archived_years()` lists the archived seasons without opening a file.
+
 ### Deployed at cfb.tzadek.ai
 - The dashboard is hosted at [cfb.tzadek.ai](https://cfb.tzadek.ai): a Railway service built from
   the new root `Dockerfile` (python 3.12-slim, the package with its `app` extras, the dashboard,
