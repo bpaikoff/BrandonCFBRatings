@@ -1,4 +1,4 @@
-.PHONY: install lint format test test-fast demo backtest app clean
+.PHONY: install lint format test test-fast demo backtest app docker clean
 
 install:        ## editable install with dashboard + dev tools
 	pip install -e ".[dev]"
@@ -25,6 +25,10 @@ backtest:       ## walk-forward comparison of every method on a synthetic season
 
 app:            ## launch the dashboard (BLAS pinned to one thread: see cfbratings/_blas.py)
 	OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 streamlit run apps/streamlit_app.py
+
+docker:         ## build the image Railway deploys (cfb.tzadek.ai) and run it locally
+	docker build -t cfbratings .
+	docker run --rm -p 8501:8501 $(if $(wildcard .env),--env-file .env) cfbratings
 
 clean:
 	rm -rf .pytest_cache .ruff_cache htmlcov .coverage build dist *.egg-info
