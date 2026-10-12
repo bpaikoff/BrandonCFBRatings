@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Public-dashboard mode (API budget)
+- `CFB_PUBLIC_DASHBOARD=1` (`Settings.public_dashboard`, set in the Docker image for cfb.tzadek.ai)
+  hides the sidebar's **Refresh API cache** button and limits the season picker to the seasons the
+  archive holds plus the one in progress, with the warm-start depth clamped to match. Visitors can
+  no longer re-download seasons or request years the archive lacks, so the deployed site spends at
+  most the current season's games calls (one per `CFB_CACHE_TTL_HOURS`) against the key's 1 000
+  calls a month. `JsonCache.archived_years()` lists the archived seasons without opening a file.
+
 ### Deployed at cfb.tzadek.ai
 - The dashboard is hosted at [cfb.tzadek.ai](https://cfb.tzadek.ai): a Railway service built from
   the new root `Dockerfile` (python 3.12-slim, the package with its `app` extras, the dashboard,

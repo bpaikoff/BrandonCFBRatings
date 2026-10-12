@@ -21,7 +21,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     STREAMLIT_SERVER_ADDRESS=0.0.0.0 \
     STREAMLIT_SERVER_HEADLESS=true \
     STREAMLIT_SERVER_FILE_WATCHER_TYPE=none \
-    STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+    STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
+    # anyone can open the site: no refresh button, archived seasons + the current one only, so
+    # visitors cannot spend the CFBD key's 1 000 calls a month (override with 0 on Railway)
+    CFB_PUBLIC_DASHBOARD=1
 
 WORKDIR /app
 

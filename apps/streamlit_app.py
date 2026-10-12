@@ -451,18 +451,26 @@ with st.sidebar:
     freshness_slot = st.empty()  # filled once the seasons are loaded, so a refresh reports itself
     if not has_key and not demo:
         st.warning("No `CFBD_API_KEY` found. Add one to `.env` or switch to demo mode.")
-    year = int(st.number_input("Season", min_value=2000, max_value=2035, value=int(settings.year), step=1))
+    # Public site: only seasons that cost no API call (the archive) plus the one in progress.
+    public = settings.public_dashboard
+    if public:
+        archived = CFBDClient(settings).cache.archived_years()
+        min_year, max_year = (archived[0] if archived else int(settings.year)), int(settings.year)
+    else:
+        min_year, max_year = 2000, 2035
+    year = int(st.number_input("Season", min_value=min_year, max_value=max_year, value=int(settings.year), step=1))
     method = st.selectbox(
         "Rating method", MODEL_NAMES, index=MODEL_NAMES.index("hybrid"), format_func=lambda m: MODEL_LABELS[m]
     )
 
     with st.expander("Data options"):
+        max_warmup = min(3, year - min_year) if public else 3  # never reach below the archive on the public site
         warmup = int(
             st.number_input(
                 "Warm-start from prior seasons",
                 min_value=0,
-                max_value=3,
-                value=1,
+                max_value=max_warmup,
+                value=min(1, max_warmup),
                 step=1,
                 help="Earlier seasons are loaded; their regressed final ratings seed this season and feed the backtest.",
             )
@@ -509,7 +517,10 @@ with st.sidebar:
 
     if "refresh_token" not in st.session_state:
         st.session_state.refresh_token = 0
-    if st.button("Refresh API cache", disabled=demo, help="Re-download this selection from CFBD once."):
+    if public:  # no visitor can spend the key's monthly budget; the cache refreshes itself
+        if not demo:
+            st.caption(f"Data refreshes itself every {settings.cache_ttl_hours:g} h.")
+    elif st.button("Refresh API cache", disabled=demo, help="Re-download this selection from CFBD once."):
         st.session_state.refresh_token += 1
         st.session_state.refresh_pending = True
     calls_slot = st.empty()  # "API calls this session", filled after the load so a refresh counts itself

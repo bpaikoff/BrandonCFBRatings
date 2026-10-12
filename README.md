@@ -160,6 +160,7 @@ Settings come from environment variables or a `.env` file (see [`.env.example`](
 | `CFB_CACHE_DIR` / `CFB_CACHE_TTL_HOURS` | `data/cache` / `6` | working JSON cache (finished seasons never expire) |
 | `CFB_ARCHIVE_DIR` | `data/archive` | gzipped payloads of finished seasons, committed to the repo so a fresh clone never re-downloads them |
 | `STREAMLIT_THEME_BASE` | `light` (from `.streamlit/config.toml`) | `dark` switches the dashboard, its logos and charts to the dark theme |
+| `CFB_PUBLIC_DASHBOARD` | `0` (`1` in the Docker image) | public-site mode: hides the dashboard's **Refresh API cache** button and limits the season picker to the archived seasons plus the one in progress, so visitors cannot spend the key's monthly call budget |
 | `CFB_HFA` | `2.5` | home-field advantage in points (never applied on neutral sites) |
 | `CFB_COLLEY_PRIOR` | `2.0` | Colley pseudo-games |
 | `CFB_MASSEY_LAMBDA` / `CFB_MASSEY_MAX_MARGIN` / `CFB_MASSEY_HALF_LIFE` / `CFB_MASSEY_PRIOR_LAMBDA` | `1.0` / `50` / `0` / `3.0` | Massey ridge, margin cap, recency half-life (weeks), ridge toward a preseason prior |
@@ -206,9 +207,14 @@ docker run --rm -p 8501:8501 -e CFBD_API_KEY=... cfbratings     # http://localho
 ```
 
 The image carries the committed `data/archive/` (2021–2025), so the only API calls a fresh
-container makes are the two or three for the season in progress, refreshed every
-`CFB_CACHE_TTL_HOURS`. The working cache under `data/cache/` is ephemeral unless a Railway volume
-is mounted at `/app/data/cache`.
+container makes are the two for the season in progress: the roster once, the games again after
+every `CFB_CACHE_TTL_HOURS` (6 by default, so at most four games calls a day; every visitor shares
+the same cache). The image also sets `CFB_PUBLIC_DASHBOARD=1`: the **Refresh API cache** button is
+hidden and the season picker is limited to the archived seasons plus the current one, so no
+visitor can re-download seasons or reach for years the archive does not hold. That keeps the site
+well inside the free tier's 1 000 calls a month (a key that exceeds it is disabled until the next
+month). The working cache under `data/cache/` is ephemeral unless a Railway volume is mounted at
+`/app/data/cache`; without one, each deploy costs those two calls again.
 
 Setting it up (one-time, in the Railway and Cloudflare dashboards):
 

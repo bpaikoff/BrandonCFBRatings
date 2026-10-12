@@ -257,3 +257,20 @@ def test_client_freshness_never_calls_the_api(tmp_path, monkeypatch):
     assert CFBDClient.api_calls == 1 and client.calls == ["/games {'year': 2030, 'seasonType': 'both'}"]
     with pytest.raises(ValueError):
         client.freshness(2030, "nope")
+
+
+def test_archived_years_lists_games_payloads(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    for name in (
+        "games_2023_both.json.gz",
+        "games_2021_both.json.gz",
+        "games_2022_regular.json.gz",
+        "teams_2024.json.gz",
+    ):
+        (archive / name).write_bytes(b"")
+    cache = JsonCache(tmp_path / "cache", archive_dir=archive)
+    assert cache.archived_years() == [2021, 2023]
+    assert cache.archived_years("regular") == [2022]
+    assert JsonCache(tmp_path / "cache").archived_years() == []  # no archive configured
+    assert JsonCache(tmp_path / "cache", archive_dir=tmp_path / "missing").archived_years() == []

@@ -54,6 +54,28 @@ def _no_none_text(df) -> bool:
 
 
 @pytest.mark.slow
+def test_public_dashboard_hides_refresh_and_bounds_seasons(offline, monkeypatch):
+    """CFB_PUBLIC_DASHBOARD: no refresh button; seasons limited to the archive plus the current one."""
+    import dataclasses
+
+    year = int(offline.year)
+    offline.archive_dir.mkdir(parents=True, exist_ok=True)
+    for y in (year - 2, year - 1):  # the archive holds two finished seasons
+        (offline.archive_dir / f"games_{y}_both.json.gz").write_bytes(b"")
+    public = dataclasses.replace(offline, public_dashboard=True)
+    monkeypatch.setattr("cfbratings.settings", public)
+    monkeypatch.setattr("cfbratings.config.settings", public)
+
+    at = _run(AppTest.from_file(str(APP), default_timeout=180))
+    assert not [b for b in at.sidebar.button if b.label == "Refresh API cache"]
+    season = _widget(at.sidebar.number_input, "Season")
+    assert (season.proto.min, season.proto.max, season.value) == (year - 2, year, year)
+    warmup = _widget(at.sidebar.number_input, "Warm-start from prior seasons")
+    assert (warmup.proto.max, warmup.value) == (2, 1)  # cannot warm-start from below the archive
+    assert [tab.label for tab in at.tabs]  # the rest of the page still renders
+
+
+@pytest.mark.slow
 def test_dashboard_runs_in_demo_mode():
     at = _run(AppTest.from_file(str(APP), default_timeout=180))
     assert at.sidebar.radio[0].value.startswith("Demo")  # no key in tests, so the dashboard never reaches CFBD
