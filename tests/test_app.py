@@ -185,3 +185,16 @@ def test_dashboard_matchup_rankings_and_backtest_controls():
     assert "Top 25 by PPoints" in _chart_titles(at)
     assert any("Pick at least one method" in i.value for i in at.info)
     assert not [df for df in at.dataframe if "brier" in df.value.columns]
+
+
+def test_load_data_cache_expires_with_the_disk_cache():
+    """The public site has no refresh button and constant load_data arguments, so the Streamlit
+    cache must carry a ttl or the first fetch after a deploy is served forever (regression)."""
+    import ast
+
+    tree = ast.parse(APP.read_text(encoding="utf-8"))
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "load_data")
+    deco = next(d for d in fn.decorator_list if isinstance(d, ast.Call) and ast.unparse(d.func) == "st.cache_data")
+    ttl = next((kw.value for kw in deco.keywords if kw.arg == "ttl"), None)
+    assert ttl is not None, "load_data's st.cache_data needs a ttl"
+    assert "settings.cache_ttl_hours" in ast.unparse(ttl)
