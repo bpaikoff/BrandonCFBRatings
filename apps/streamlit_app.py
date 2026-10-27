@@ -422,7 +422,10 @@ def oos_predictions_view(preds: pd.DataFrame) -> pd.DataFrame:
 # --- cached computations ---------------------------------------------------------------------
 
 
-@st.cache_data(show_spinner="Loading season…")
+# Expire with the disk cache: on the public site every argument below is constant, so without a
+# ttl Streamlit would serve the first fetch after a deploy for the life of the process and the
+# JsonCache TTL (and the sidebar's "refreshes itself every N h") would never get a say.
+@st.cache_data(show_spinner="Loading season…", ttl=settings.cache_ttl_hours * 3600)
 def load_data(
     demo: bool,
     year: int,

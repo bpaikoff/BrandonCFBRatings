@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed: the public dashboard now refreshes
+- `load_data` in the dashboard was cached with `st.cache_data` and no `ttl`. On cfb.tzadek.ai every
+  one of its arguments is constant (no refresh button, default season), so the first fetch after
+  a deploy was served for the life of the process: the disk cache's `CFB_CACHE_TTL_HOURS` was never
+  consulted and the site stuck at the scores of the day it was deployed. The Streamlit cache now
+  expires on the same `cache_ttl_hours`, after which the usual path runs (disk cache, then one
+  `/games` and one `/lines` call for the season in progress).
+
 ### The Playoff, and independents handled as what they are
 - New `cfbratings.cfp`: conference standings from CFBD's `conferenceGame` flag (head-to-head,
   overall record and rating as tie-breakers), champions from the title games CFBD notes as
