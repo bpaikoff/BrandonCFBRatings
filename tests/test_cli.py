@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -98,3 +99,26 @@ def test_cfp_command(capsys, tmp_path):
     assert code == 0 and "format 2024" in out and "per loss 1" in out
     code, out = run(capsys, "conferences")
     assert code == 0 and "strength_index" in out
+
+
+def test_cfp_chalk_and_bracket_sims(capsys):
+    code, out = run(
+        capsys, "--demo-weeks", "9", "cfp", "--method", "massey", "--no-ppoints", "--chalk", "--bracket-sims", "200"
+    )
+    assert code == 0
+    assert "Chalk bracket" in out and "Champion: (" in out and " wins " in out
+    assert "simulated 200 times" in out and "p_title" in out
+    assert "proj." in out  # the bracket if the season ended today carries projected scores
+
+
+def test_cfp_sims_print_records_and_title_games(capsys):
+    code, out = run(capsys, "--demo-weeks", "8", "cfp", "--method", "elo", "--no-ppoints", "--sims", "30", "--top", "4")
+    assert code == 0
+    assert "Projected records" in out and "mode_record" in out and "p_undefeated" in out
+    assert "Projected title games" in out and "p_matchup" in out and "proj_score" in out
+
+
+def test_predict_prints_a_projected_score(capsys):
+    code, out = run(capsys, "predict", "Delta State", "Lakes State", "--methods", "massey")
+    assert code == 0 and "proj_score" in out
+    assert re.search(r"(Delta State|Lakes State) \d+, (Delta State|Lakes State) \d+", out)

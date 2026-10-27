@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Projected scores, and a Playoff tab that projects the whole season
+- New `cfbratings.scores`: `fit_score_model` fits every team's offence and defence
+  (points scored and allowed above the league mean, home-field split in two) on the season's
+  completed games by ridge least squares, and `ScoreModel.project` splits the resulting total
+  around the ratings' margin into a projected score (`ScoreModel.sample` draws one). No API call:
+  only the games already loaded. Methodology section 8.
+- `cfp.game_projections`: every unplayed game with its win probability, line, favourite and
+  projected score. `cfp.simulate_playoff` now also reports each team's projected and most likely
+  final record, P(undefeated), P(reaches the title game), every title-game pairing the
+  simulations produced (`title_games`, with the favourite and a projected score; a played title
+  game shows its real score), the seed distribution (`seeds`) and the final-wins distribution
+  (`wins`); the pooled FCS team's games now count in the simulated records, a projected title
+  game credits the winner with a win, and a neutral-site title game is one pairing whichever
+  side led the standings. `bracket_odds` and `playoff_picture` take a score model and put a
+  projected score on every bracket game.
+- The bracket on its own: `cfp.custom_field` (a hand-picked field of up to twelve),
+  `cfp.play_bracket` (the chalk bracket with projected scores, or one random play-through with
+  sampled scores deciding the winners) and `cfp.simulate_bracket` (a Monte Carlo of a fixed
+  bracket, converging to the exact odds).
+- Dashboard **Playoff** tab: a *Season projection* section with the remaining games (filter by
+  week, conference or team; line and projected score per game), projected records, title games,
+  playoff odds (plus the projected bracket with scores) and seed / win-total heatmaps; and a
+  *Playoff only* section that fixes the field (current, projected or custom) and shows the chalk
+  bracket, the exact odds, a bracket Monte Carlo against the exact odds, or one simulated playoff
+  with sampled scores and the number of upsets. The **Matchup** tab adds a projected score per
+  model and for the consensus. Brackets show winners in bold and losers dimmed.
+- CLI: `cfbratings cfp --chalk` prints the chalk bracket with projected scores,
+  `--bracket-sims N` the Monte Carlo of the current bracket; `--sims N` adds the projected records
+  and the most likely title game per conference; `cfbratings predict` prints a projected score.
+
 ### Fixed: the public dashboard now refreshes
 - `load_data` in the dashboard was cached with `st.cache_data` and no `ttl`. On cfb.tzadek.ai every
   one of its arguments is constant (no refresh button, default season), so the first fetch after

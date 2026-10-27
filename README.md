@@ -16,7 +16,8 @@ system actually predicts games?**
 |---|---|
 | **Models** | Colley, Massey (ridge, recency-weighted), Elo (margin-of-victory), Bradley-Terry, Hybrid blend — all warm-startable from the previous season |
 | **Analytics** | strength of schedule, momentum in points, conference strength index (independents handled on their own), PPoints résumé score, weekly rank trajectories, exact rest-of-season record projections |
-| **Playoff** | conference standings and title-game projections, a committee-style ranking with adjustable seeding weights, the 12-team bracket under the season's rules (2024, 2025, 2026 formats), exact bracket odds and a rest-of-season Monte Carlo for playoff, bye and title probabilities |
+| **Playoff** | conference standings and title-game projections, a committee-style ranking with adjustable seeding weights, the 12-team bracket under the season's rules (2024, 2025, 2026 formats), exact bracket odds and a rest-of-season Monte Carlo for projected records, title games, seeds and playoff, bye and title probabilities; a playoff-only mode (current, projected or custom field) with the chalk bracket, a bracket Monte Carlo and single play-throughs |
+| **Projected scores** | every remaining game, title game and bracket game gets a projected score: the ratings' margin split around a total from a team offence/defence model fitted on the season's games (no extra API call) |
 | **Backtesting** | out-of-sample walk-forward evaluation across one or many seasons: accuracy, Brier, log loss, MAE/RMSE, calibration, home-team baseline, Vegas closing-line comparison, grid-search tuning |
 | **Interfaces** | `cfbratings` CLI with CSV/JSON export · Streamlit dashboard ([cfb.tzadek.ai](https://cfb.tzadek.ai)) · importable Python package |
 | **Data** | [CollegeFootballData.com](https://collegefootballdata.com) API behind a two-tier cache (working cache plus a committed archive of finished seasons, so a season costs two or three API calls ever; the 2021–2025 seasons ship in the archive), FCS opponents pooled rather than dropped, or a synthetic multi-season generator for offline use |
@@ -46,9 +47,9 @@ streamlit run apps/streamlit_app.py
 | `cfbratings rank` | ratings table with record, SOS, momentum and PPoints (`--method`, `--top`, `--sort-by`, `--conference`, `--csv/--json`) |
 | `cfbratings team "Ohio State"` | one team's schedule with expected vs. actual margins and its week-by-week rank |
 | `cfbratings conferences` | conference strength index |
-| `cfbratings predict "Ohio State" "Michigan" [--neutral]` | spread and win probability from every model |
+| `cfbratings predict "Ohio State" "Michigan" [--neutral]` | spread, win probability and projected score from every model |
 | `cfbratings project` | rest-of-season projections: projected record, P(6+/10+ wins), P(win out), next opponent |
-| `cfbratings cfp` | the Playoff picture: conference races, the bracket if the season ended today with exact odds, and (`--sims N`) simulated playoff, bye and title probabilities; `--weights rating=1,resume=0.5,loss=0.35,champion=0.15` sets the committee proxy, `--format 2024\|2025\|2026` the rules |
+| `cfbratings cfp` | the Playoff picture: conference races, the bracket if the season ended today with exact odds and projected scores, `--chalk` the favourites' bracket, `--bracket-sims N` a Monte Carlo of that bracket, and (`--sims N`) simulated playoff, bye and title probabilities with projected records and title games; `--weights rating=1,resume=0.5,loss=0.35,champion=0.15` sets the committee proxy, `--format 2024\|2025\|2026` the rules |
 | `cfbratings backtest` | walk-forward comparison of all methods (`--methods`, `--start-week`, `--by-week`, `--calibration`, `--lines` for a Vegas comparison, `--predictions-csv`) |
 | `cfbratings tune --method elo --grid "k=15,25,40;hfa=2,2.5,3"` | grid search hyper-parameters against any backtest metric |
 | `cfbratings snapshot` | compute and cache weekly rating snapshots |

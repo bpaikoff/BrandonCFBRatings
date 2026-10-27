@@ -198,3 +198,41 @@ def test_load_data_cache_expires_with_the_disk_cache():
     ttl = next((kw.value for kw in deco.keywords if kw.arg == "ttl"), None)
     assert ttl is not None, "load_data's st.cache_data needs a ttl"
     assert "settings.cache_ttl_hours" in ast.unparse(ttl)
+
+
+@pytest.mark.slow
+def test_playoff_tab_season_projection_and_playoff_only_views():
+    """The Playoff tab's new sections render in every view: the season projection sub-tabs, a custom
+    field, and each playoff-only view (chalk, exact odds, Monte Carlo, one simulated playoff)."""
+    at = AppTest.from_file(str(APP), default_timeout=300)
+    _run(at)
+    _widget(at.sidebar.radio, "Data source").set_value("Demo (synthetic season)")
+    _weeks_slider(at).set_value(9)
+    _run(at)
+    labels = [tab.label for tab in at.tabs]
+    for label in ("Remaining games", "Projected records", "Title games", "Playoff odds", "Seeds & win totals"):
+        assert label in labels
+    field = _widget(at.radio, "Field")
+    assert field.options == ["Current bracket", "Projected bracket", "Custom field"]
+    show = _widget(at.radio, "Show")
+    for view in ("Exact odds", "Monte Carlo", "One simulated playoff", "Chalk bracket"):
+        _widget(at.radio, "Show").set_value(view)
+        _run(at)
+    show = _widget(at.radio, "Show")
+    assert show.value == "Chalk bracket"
+    # a hand-picked field of six: the bracket still plays out
+    _widget(at.radio, "Field").set_value("Custom field")
+    _run(at)
+    picker = next(m for m in at.multiselect if m.label.startswith("Teams in seed order"))
+    assert len(picker.value) == 12
+    picker.set_value(picker.value[:6])
+    _run(at)
+    _widget(at.radio, "Field").set_value("Projected bracket")
+    _run(at)
+    # the game-projection table reacts to its filters
+    week = _widget(at.selectbox, "Week")
+    week.set_value(int(week.options[1].split()[-1]))  # options are the formatted labels, values the week numbers
+    _run(at)
+    assert _widget(at.selectbox, "Week").value != "All"
+    # scores appear in the matchup tab too
+    assert any("Projected score" in str(md.value) for md in at.markdown)

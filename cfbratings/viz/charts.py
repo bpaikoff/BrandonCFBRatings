@@ -665,3 +665,46 @@ def win_distribution_chart(
     fig.update_xaxes(title_text="Final regular-season wins", type="category")
     fig.update_yaxes(title_text="Probability", tickformat=".0%", range=[0, max(distribution) * 1.25 + 0.02])
     return _layout(fig, title=f"{team}: projected win total" if team else None, height=340, legend=False, theme=theme)
+
+
+def probability_heatmap(
+    df: pd.DataFrame,
+    *,
+    label_col: str,
+    value_cols: Sequence[str],
+    title: str | None = None,
+    x_title: str | None = None,
+    theme: str = "light",
+    height: int | None = None,
+) -> go.Figure:
+    """A row per ``df[label_col]``, a column per ``value_cols``, each cell a probability (0-1).
+
+    Cells read as a single blue ramp from the surface (zero) up; values under half a percent
+    print no label so the sparse tail stays quiet.
+    """
+    t = _tokens(theme)
+    ramp = list(SEQUENTIAL) if theme != "dark" else list(reversed(SEQUENTIAL))
+    stops = [t["surface"], *ramp]
+    colorscale = [[i / (len(stops) - 1), c] for i, c in enumerate(stops)]
+    z = df[list(value_cols)].to_numpy(dtype=float)
+    labels = [[f"{v:.0%}" if v >= 0.005 else "" for v in row] for row in z]
+    fig = go.Figure(
+        go.Heatmap(
+            z=z,
+            x=[str(c) for c in value_cols],
+            y=df[label_col].astype(str).tolist(),
+            zmin=0.0,
+            zmax=1.0,
+            colorscale=colorscale,
+            text=labels,
+            texttemplate="%{text}",
+            textfont={"size": 11},
+            xgap=2,
+            ygap=2,
+            hovertemplate="<b>%{y}</b> · %{x}: %{z:.1%}<extra></extra>",
+            colorbar={"tickformat": ".0%", "thickness": 12, "outlinewidth": 0, "tickfont": {"color": t["muted"]}},
+        )
+    )
+    fig.update_xaxes(type="category", side="top", title_text=x_title, showgrid=False)
+    fig.update_yaxes(type="category", autorange="reversed", showgrid=False)
+    return _layout(fig, title=title, height=height or 26 * len(df) + 140, legend=False, theme=theme)
