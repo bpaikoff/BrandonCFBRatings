@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -37,10 +38,16 @@ from cfbratings.cfp import (
     FORMATS,
     ROUND_LABELS,
     ROUNDS,
-    BracketOdds,
     SeedingWeights,
+    bracket_odds,
+    calibrated_scorer,
+    calibrated_win_prob,
+    custom_field,
     format_for,
+    game_projections,
+    play_bracket,
     playoff_picture,
+    simulate_bracket,
     simulate_playoff,
     standings_table,
 )
@@ -61,12 +68,14 @@ from cfbratings.ppoints import ppoints as _ppoints
 from cfbratings.predict import MarginCalibrator
 from cfbratings.priors import WarmStart, warm_start
 from cfbratings.projections import TeamProjection, project_team, projection_table
+from cfbratings.scores import fit_score_model
 from cfbratings.snapshots import RANK_UNCHANGED, rank_changes, weekly_snapshots
 from cfbratings.viz import (
     THEMES,
     calibration_chart,
     conference_dots,
     contrast_ratio,
+    probability_heatmap,
     rating_bar,
     rating_sos_scatter,
     resolve_team_color,
@@ -122,6 +131,10 @@ _CSS = """
 .game .seed{opacity:.6;font-size:.8rem;min-width:1.6em}
 .game img{width:20px;height:20px;object-fit:contain;flex:0 0 auto}
 .game .p{margin-left:auto;font-size:.85rem;opacity:.8;flex:0 0 auto}
+.game .pts{margin-left:auto;font-weight:600;font-variant-numeric:tabular-nums;flex:0 0 auto}
+.game .pts + .p{margin-left:8px}
+.game .win > span:not(.seed):not(.p){font-weight:700}
+.game .lose{opacity:.55}
 .game .site{font-size:.75rem;opacity:.6;margin-top:2px}
 </style>
 """
@@ -257,29 +270,45 @@ def matchup_header(home: str, away: str, neutral: bool, teams: Mapping[str, Team
     )
 
 
-def bracket_html(odds: BracketOdds, logo_map: Mapping[str, str | None], byes: int) -> str:
-    """The bracket as four columns of game cards; later rounds show their most likely matchup."""
+def bracket_html(
+    games: Sequence, logo_map: Mapping[str, str | None], byes: int, *, later_note: str | None = "most likely matchup"
+) -> str:
+    """The bracket as four columns of game cards.
 
-    def side(seed, p: float | None) -> str:
+    ``games`` are :class:`~cfbratings.cfp.BracketGame` (odds: later rounds show their most
+    likely matchup) or :class:`~cfbratings.cfp.PlayedGame` (a chalk or simulated play-through:
+    the winner is bold, the loser dimmed). A game with a ``score`` shows it beside each team.
+    """
+
+    def side(seed, p: float | None, pts: int | None, state: str) -> str:
         logo = _img(logo_map.get(seed.team), "")
         prob = f'<span class="p">{p:.0%}</span>' if p is not None else ""
-        return f'<div class="t"><span class="seed">{seed.seed}</span>{logo}<span>{html.escape(seed.team)}</span>{prob}</div>'
+        score = f'<span class="pts">{pts}</span>' if pts is not None else ""
+        return (
+            f'<div class="t {state}"><span class="seed">{seed.seed}</span>{logo}<span>{html.escape(seed.team)}</span>'
+            f"{score}{prob}</div>"
+        )
 
     cols = []
     for rnd in ROUNDS:
-        games = [g for g in odds.games if g.round == rnd]
-        if not games:
+        round_games = [g for g in games if g.round == rnd]
+        if not round_games:
             continue
         cards = []
-        for g in games:
+        for g in round_games:
             site = "neutral site" if g.neutral else f"at {html.escape(g.home.team)}"
+            score = getattr(g, "score", None)
+            winner = getattr(g, "winner", None)
+            hp, ap = score.rounded() if score is not None else (None, None)
+            h_state = "" if winner is None else ("win" if winner == g.home.team else "lose")
+            a_state = "" if winner is None else ("win" if winner == g.away.team else "lose")
             cards.append(
-                f'<div class="game">{side(g.home, g.p_home)}{side(g.away, 1 - g.p_home)}'
+                f'<div class="game">{side(g.home, g.p_home, hp, h_state)}{side(g.away, 1 - g.p_home, ap, a_state)}'
                 f'<div class="site">{site}</div></div>'
             )
         note = f'<div class="round-note">Seeds 1-{byes} have a bye</div>' if rnd == "first" and byes else ""
-        if rnd != "first":
-            note = '<div class="round-note">most likely matchup</div>'
+        if rnd != "first" and later_note:
+            note = f'<div class="round-note">{html.escape(later_note)}</div>'
         cols.append(
             f'<div class="round"><div class="round-title">{ROUND_LABELS[rnd]}</div>{note}{"".join(cards)}</div>'
         )
@@ -495,16 +524,50 @@ def ppoints_cached(params_json: str, data_key: str, _names, _games, _ratings, _c
     return _ppoints(_names, _games, _ratings, _conf_map, _snaps)
 
 
+@st.cache_data(show_spinner=False)
+def score_model_cached(data_key: str, _names: list[str], _games: list[Game], hfa: float):
+    return fit_score_model(_names, _games, hfa=hfa)
+
+
+@st.cache_data(show_spinner="Projecting the remaining games…")
+def game_projections_cached(params_json: str, data_key: str, _games, _result, _cal, _scores):
+    return game_projections(_games, _result, _cal, scores=_scores)
+
+
 @st.cache_data(show_spinner="Building the playoff picture…")
-def playoff_cached(params_json: str, data_key: str, weights: tuple, fmt_year: int, _teams, _games, _result, _cal, _pp):
+def playoff_cached(
+    params_json: str, data_key: str, weights: tuple, fmt_year: int, _teams, _games, _result, _cal, _pp, _scores
+):
     return playoff_picture(
-        _teams, _games, _result, _cal, ppoints=_pp, weights=SeedingWeights(*weights), fmt=format_for(fmt_year)
+        _teams,
+        _games,
+        _result,
+        _cal,
+        ppoints=_pp,
+        weights=SeedingWeights(*weights),
+        fmt=format_for(fmt_year),
+        scores=_scores,
     )
+
+
+@st.cache_data(show_spinner="Simulating the bracket…")
+def bracket_sim_cached(params_json: str, data_key: str, field_key: str, n_sims: int, _field, _result, _cal):
+    return simulate_bracket(_field, calibrated_win_prob(_result, _cal), n_sims=n_sims, seed=0)
 
 
 @st.cache_data(show_spinner="Simulating the rest of the season…")
 def simulate_cached(
-    params_json: str, data_key: str, weights: tuple, fmt_year: int, n_sims: int, _teams, _games, _result, _cal, _pp
+    params_json: str,
+    data_key: str,
+    weights: tuple,
+    fmt_year: int,
+    n_sims: int,
+    _teams,
+    _games,
+    _result,
+    _cal,
+    _pp,
+    _scores,
 ):
     return simulate_playoff(
         _teams,
@@ -516,6 +579,7 @@ def simulate_cached(
         fmt=format_for(fmt_year),
         n_sims=n_sims,
         seed=0,
+        scores=_scores,
     )
 
 
@@ -1056,7 +1120,14 @@ with tab_cfp:
     weights = (w_rating, w_resume, w_loss, w_champ)
     cfp_snaps = snapshots_cached(method, params_json, data_key, names, games, not demo, ws)
     cfp_pp = ppoints_cached(params_json, data_key, names, games, result.ratings, conf_map, cfp_snaps)
-    pic = playoff_cached(params_json, data_key, weights, fmt_year, teams, games, result, cal, cfp_pp)
+    # Projected scores: the ratings' margin split around a total fitted on this season's games (no API call).
+    cfp_scores = score_model_cached(data_key, names, games, float(cal.intercept))
+    cfp_win_prob = calibrated_win_prob(result, cal)
+    cfp_scorer = calibrated_scorer(result, cal, cfp_scores)
+    pic = playoff_cached(params_json, data_key, weights, fmt_year, teams, games, result, cal, cfp_pp, cfp_scores)
+
+    def _matchup_text(home: str, away: str, neutral: bool) -> str:
+        return f"{away} vs {home}" if neutral else f"{away} at {home}"
 
     st.subheader("Conference races")
     race_rows = []
@@ -1138,7 +1209,7 @@ with tab_cfp:
             ),
         ]
     )
-    st.markdown(bracket_html(pic.odds, logo_map, cfp_fmt.byes), unsafe_allow_html=True)
+    st.markdown(bracket_html(pic.odds.games, logo_map, cfp_fmt.byes), unsafe_allow_html=True)
     odds_df = pic.odds.table.assign(logo=logos(pic.odds.table["team"]))
     st.dataframe(
         percent_cols(odds_df, ["p_quarter", "p_semi", "p_final", "p_title"])[
@@ -1159,50 +1230,485 @@ with tab_cfp:
             "p_title": pct_bar("Title"),
         },
     )
-    st.caption("Exact odds for this bracket from the calibrated win probabilities, every possible opponent weighted.")
+    st.caption(
+        "Exact odds for this bracket from the calibrated win probabilities, every possible opponent weighted. "
+        f"Projected scores split the model's margin around a total fitted on this season's {cfp_scores.n_games} "
+        "completed games."
+    )
 
-    st.subheader("Rest of season, simulated")
+    # --- season projection ---------------------------------------------------------------------
+    st.subheader("Season projection")
+    sim = None
     if n_unplayed == 0:
         st.info("Every scheduled game has been played: the bracket above is the final one.")
     else:
         n_sims = int(st.select_slider("Simulations", [250, 500, 1000, 2000], value=500))
-        sim = simulate_cached(params_json, data_key, weights, fmt_year, n_sims, teams, games, result, cal, cfp_pp)
-        sim_df = sim.table.assign(logo=logos(sim.table["team"]))
-        sim_top = int(st.slider("Show top", 12, len(sim_df), min(25, len(sim_df)), 1, key="cfp_top"))
-        shown = sim_df.head(sim_top)
-        st.dataframe(
-            percent_cols(shown, ["p_champion", "p_playoff", "p_bye", "p_title"])[
-                ["logo", "team", "conference", "record", "p_champion", "p_playoff", "p_bye", "mean_seed", "p_title"]
-            ],
-            hide_index=True,
-            width="stretch",
-            height=table_height(len(shown)),
-            column_config={
-                "logo": logo_col(),
-                "team": "Team",
-                "conference": "Conference",
-                "record": st.column_config.TextColumn("Record", width="small"),
-                "p_champion": pct_bar("Wins conference"),
-                "p_playoff": pct_bar("Makes playoff"),
-                "p_bye": pct_bar("First-round bye"),
-                "mean_seed": st.column_config.NumberColumn("Avg seed", format="%.1f", help="When it makes the field"),
-                "p_title": pct_bar("Wins title"),
-            },
+        sim = simulate_cached(
+            params_json, data_key, weights, fmt_year, n_sims, teams, games, result, cal, cfp_pp, cfp_scores
+        )
+        proj_games = game_projections_cached(params_json, data_key, games, result, cal, cfp_scores)
+        top = sim.table.iloc[0]
+        safest = sim.table.sort_values(["p_playoff", "p_title"], ascending=False).iloc[0]
+        one = sim.projected_field[0] if sim.projected_field else None
+        p_one = (
+            float(sim.seeds.loc[sim.seeds["team"] == one.team, "1"].iloc[0])
+            if one is not None and (sim.seeds["team"] == one.team).any()
+            else None
+        )
+        kpi_row(
+            [
+                ("Games left", str(n_unplayed), f"over {proj_games['week'].nunique()} more weeks"),
+                (
+                    "Projected No. 1 seed",
+                    one.team if one else NO_VALUE,
+                    f"{p_one:.0%} to be seeded first" if p_one is not None else None,
+                ),
+                ("Title favourite", str(top["team"]), f"{top['p_title']:.0%} to win it all"),
+                ("Safest playoff bet", str(safest["team"]), f"{safest['p_playoff']:.0%} to make the field"),
+            ]
         )
         st.caption(
-            f"{sim.n_sims} simulations of the {n_unplayed} unplayed games: standings, title games, the committee "
-            "proxy and the bracket are settled in each, and the title odds average exact bracket odds."
+            f"{sim.n_sims} simulations of the {n_unplayed} unplayed games: in each, every game is drawn from its "
+            "win probability, the standings and title games are settled, the committee proxy ranks the simulated "
+            "records, the field is seeded and the bracket's exact odds are taken."
         )
-        st.markdown(
-            "**Projected bracket** (each conference's most likely champion, teams ranked by mean committee score)"
+        sp_games, sp_records, sp_titles, sp_odds, sp_dist = st.tabs(
+            ["Remaining games", "Projected records", "Title games", "Playoff odds", "Seeds & win totals"]
         )
-        st.markdown(bracket_html(sim.projected_odds, logo_map, cfp_fmt.byes), unsafe_allow_html=True)
-        st.download_button(
-            "Download playoff projections CSV",
-            sim.table.to_csv(index=False).encode(),
-            f"playoff_{season}_{method}.csv",
-            "text/csv",
+
+        with sp_games:
+            g1, g2, g3 = st.columns([1, 1, 1])
+            weeks = sorted(proj_games["week"].unique())
+            week_pick = g1.selectbox(
+                "Week", ["All", *weeks], format_func=lambda w: "All weeks" if w == "All" else f"Week {w}"
+            )
+            conf_pick = g2.selectbox(
+                "Conference   ", ["All", *sorted({conf_map[n] or "Independent" for n in real_names})]
+            )
+            team_pick = g3.selectbox("Team  ", ["All", *sorted(real_names)])
+            gview = proj_games
+            if week_pick != "All":
+                gview = gview[gview["week"] == week_pick]
+            if conf_pick != "All":
+                gview = gview[(gview["home_conference"] == conf_pick) | (gview["away_conference"] == conf_pick)]
+            if team_pick != "All":
+                gview = gview[(gview["home"] == team_pick) | (gview["away"] == team_pick)]
+            gview = gview.assign(
+                date=gview["date"].map(kickoff_label).fillna(""),
+                away_logo=logos(gview["away_name"]),
+                home_logo=logos(gview["home_name"]),
+                site=gview["neutral"].map({True: "Neutral", False: "Home"}),
+                kind=gview.apply(
+                    lambda r: "Title game" if r["title_game"] else ("Conference" if r["conference_game"] else ""),
+                    axis=1,
+                ),
+            )
+            st.dataframe(
+                percent_cols(gview, ["p_home", "p_favorite"])[
+                    [
+                        "week",
+                        "date",
+                        "away_logo",
+                        "away_name",
+                        "home_logo",
+                        "home_name",
+                        "site",
+                        "p_home",
+                        "favorite",
+                        "p_favorite",
+                        "line",
+                        "proj_score",
+                        "kind",
+                    ]
+                ],
+                hide_index=True,
+                width="stretch",
+                height=table_height(len(gview)),
+                column_config={
+                    "week": st.column_config.NumberColumn("Wk", width="small"),
+                    "date": st.column_config.TextColumn("Date", width="small"),
+                    "away_logo": logo_col(),
+                    "away_name": "Away",
+                    "home_logo": logo_col(),
+                    "home_name": "Home",
+                    "site": st.column_config.TextColumn("Site", width="small"),
+                    "p_home": pct_bar("Home wins"),
+                    "favorite": "Favourite",
+                    "p_favorite": pct_num("Fav. %"),
+                    "line": st.column_config.TextColumn("Line", width="small"),
+                    "proj_score": st.column_config.TextColumn("Proj. score", help="Home-away", width="small"),
+                    "kind": st.column_config.TextColumn("Game", width="small"),
+                },
+            )
+            st.caption(
+                f"{len(gview)} of {len(proj_games)} remaining games. The line is the model's spread; the projected "
+                "score is that margin split around the matchup's projected total (offence and defence fitted on the "
+                "season's games)."
+            )
+            st.download_button(
+                "Download game projections CSV",
+                proj_games.to_csv(index=False).encode(),
+                f"games_{season}_{method}.csv",
+                "text/csv",
+            )
+
+        with sp_records:
+            r1, r2 = st.columns([1, 1])
+            rec_sort = r1.selectbox(
+                "Sort by ",
+                ["proj_wins", "p_undefeated", "p_title_game", "p_champion", "p_playoff"],
+                format_func=lambda c: {
+                    "proj_wins": "Projected wins",
+                    "p_undefeated": "P(undefeated)",
+                    "p_title_game": "P(conference title game)",
+                    "p_champion": "P(conference champion)",
+                    "p_playoff": "P(playoff)",
+                }[c],
+            )
+            rec_conf = r2.selectbox(
+                "Conference    ", ["All", *sorted({conf_map[n] or "Independent" for n in real_names})]
+            )
+            rec_df = sim.table
+            if rec_conf != "All":
+                rec_df = rec_df[rec_df["conference"] == rec_conf]
+            rec_df = rec_df.sort_values([rec_sort, "p_title"], ascending=False)
+            rec_view = rec_df.assign(
+                logo=logos(rec_df["team"]),
+                mode_record=rec_df["mode_record"] + rec_df["p_mode_record"].map(lambda p: f" ({p:.0%})"),
+            )
+            st.dataframe(
+                percent_cols(rec_view, ["p_undefeated", "p_title_game", "p_champion", "p_playoff"])[
+                    [
+                        "logo",
+                        "team",
+                        "conference",
+                        "record",
+                        "proj_record",
+                        "mode_record",
+                        "p_undefeated",
+                        "p_title_game",
+                        "p_champion",
+                        "p_playoff",
+                    ]
+                ],
+                hide_index=True,
+                width="stretch",
+                height=table_height(len(rec_view)),
+                column_config={
+                    "logo": logo_col(),
+                    "team": "Team",
+                    "conference": "Conference",
+                    "record": st.column_config.TextColumn("Now", width="small"),
+                    "proj_record": st.column_config.TextColumn(
+                        "Projected", help="Mean final wins-losses over the simulations, title game included"
+                    ),
+                    "mode_record": st.column_config.TextColumn(
+                        "Most likely", help="The single most frequent final record and how often it happened"
+                    ),
+                    "p_undefeated": pct_bar("Undefeated"),
+                    "p_title_game": pct_bar("Title game"),
+                    "p_champion": pct_bar("Wins conference"),
+                    "p_playoff": pct_bar("Makes playoff"),
+                },
+            )
+            st.caption(
+                "Final records include a conference title game when the team reaches one. Postseason bowls and "
+                "playoff games are not counted."
+            )
+
+        with sp_titles:
+            show_all = st.toggle("Show every matchup", value=False, help="Otherwise matchups under 5% are hidden")
+            tg = sim.title_games
+            if not show_all:
+                tg = tg[(tg["p_matchup"] >= 0.05) | tg["decided"]]
+            tg = tg.assign(
+                order=tg["conference"].map(lambda c: (c not in cfp_fmt.power_conferences, c)),
+                away_logo=logos(tg["away"]),
+                home_logo=logos(tg["home"]),
+                matchup=[_matchup_text(h, a, n) for h, a, n in zip(tg["home"], tg["away"], tg["neutral"])],
+                status=tg["decided"].map({True: "Played", False: "Projected"}),
+                fav_logo=logos(tg["favorite"]),
+            ).sort_values(["order", "p_matchup"], ascending=[True, False])
+            st.dataframe(
+                percent_cols(tg, ["p_matchup", "p_favorite"])[
+                    [
+                        "conference",
+                        "away_logo",
+                        "home_logo",
+                        "matchup",
+                        "p_matchup",
+                        "fav_logo",
+                        "favorite",
+                        "p_favorite",
+                        "proj_score",
+                        "status",
+                    ]
+                ],
+                hide_index=True,
+                width="stretch",
+                height=table_height(len(tg)),
+                column_config={
+                    "conference": "Conference",
+                    "away_logo": logo_col(),
+                    "home_logo": logo_col(),
+                    "matchup": st.column_config.TextColumn("Title game", help="Away vs home; 'at' when hosted"),
+                    "p_matchup": pct_bar("This matchup"),
+                    "fav_logo": logo_col(),
+                    "favorite": "Favourite",
+                    "p_favorite": pct_num("Wins it"),
+                    "proj_score": st.column_config.TextColumn("Proj. score", help="Home-away", width="small"),
+                    "status": st.column_config.TextColumn("Status", width="small"),
+                },
+            )
+            st.caption(
+                "How often each pairing met in a title game across the simulations; a played title game shows its "
+                "real score. The favourite's chance is for that pairing at that site."
+            )
+            with st.expander("Conference title odds, every contender"):
+                ch_df = sim.champions[sim.champions["p_title_game"] > 0].assign(logo=lambda d: logos(d["team"]))
+                ch_df = ch_df.assign(order=ch_df["conference"].map(lambda c: (c not in cfp_fmt.power_conferences, c)))
+                ch_df = ch_df.sort_values(["order", "p_champion"], ascending=[True, False])
+                st.dataframe(
+                    percent_cols(ch_df, ["p_title_game", "p_champion"])[
+                        ["conference", "logo", "team", "p_title_game", "p_champion"]
+                    ],
+                    hide_index=True,
+                    width="stretch",
+                    height=table_height(len(ch_df)),
+                    column_config={
+                        "conference": "Conference",
+                        "logo": logo_col(),
+                        "team": "Team",
+                        "p_title_game": pct_bar("Reaches title game"),
+                        "p_champion": pct_bar("Wins conference"),
+                    },
+                )
+
+        with sp_odds:
+            sim_df = sim.table.assign(logo=logos(sim.table["team"]))
+            sim_top = int(st.slider("Show top", 12, len(sim_df), min(25, len(sim_df)), 1, key="cfp_top"))
+            shown = sim_df.head(sim_top)
+            st.dataframe(
+                percent_cols(shown, ["p_champion", "p_playoff", "p_bye", "p_semi", "p_final", "p_title"])[
+                    [
+                        "logo",
+                        "team",
+                        "conference",
+                        "record",
+                        "proj_record",
+                        "p_champion",
+                        "p_playoff",
+                        "p_bye",
+                        "mean_seed",
+                        "p_semi",
+                        "p_final",
+                        "p_title",
+                    ]
+                ],
+                hide_index=True,
+                width="stretch",
+                height=table_height(len(shown)),
+                column_config={
+                    "logo": logo_col(),
+                    "team": "Team",
+                    "conference": "Conference",
+                    "record": st.column_config.TextColumn("Record", width="small"),
+                    "proj_record": st.column_config.TextColumn("Projected", width="small"),
+                    "p_champion": pct_bar("Wins conference"),
+                    "p_playoff": pct_bar("Makes playoff"),
+                    "p_bye": pct_bar("First-round bye"),
+                    "mean_seed": st.column_config.NumberColumn(
+                        "Avg seed", format="%.1f", help="When it makes the field"
+                    ),
+                    "p_semi": pct_bar("Semifinal"),
+                    "p_final": pct_bar("Final"),
+                    "p_title": pct_bar("Wins title"),
+                },
+            )
+            st.markdown(
+                "**Projected bracket** (each conference's most likely champion, teams ranked by mean committee "
+                "score, projected scores for the most likely matchups)"
+            )
+            st.markdown(bracket_html(sim.projected_odds.games, logo_map, cfp_fmt.byes), unsafe_allow_html=True)
+            st.download_button(
+                "Download playoff projections CSV",
+                sim.table.to_csv(index=False).encode(),
+                f"playoff_{season}_{method}.csv",
+                "text/csv",
+            )
+
+        with sp_dist:
+            seed_cols = [str(k) for k in range(1, cfp_fmt.field_size + 1)]
+            seeds_df = sim.seeds[sim.seeds["p_playoff"] >= 0.05].head(20)
+            if seeds_df.empty:
+                st.info("No team reaches the field in 5% of simulations yet.")
+            else:
+                chart(
+                    probability_heatmap(
+                        seeds_df,
+                        label_col="team",
+                        value_cols=seed_cols,
+                        title="Seed odds (teams in the field in 5%+ of simulations)",
+                        x_title="Seed",
+                        theme=theme,
+                    ),
+                    theme,
+                )
+            win_cols = [c for c in sim.wins.columns if c not in ("team", "conference")]
+            wins_view = sim.wins.set_index("team").loc[sim.table.sort_values("proj_wins", ascending=False)["team"]]
+            wins_view = wins_view.reset_index().head(25)
+            # drop win totals nobody shown reaches, so the columns are the plausible range
+            keep = [c for c in win_cols if wins_view[c].max() >= 0.005]
+            chart(
+                probability_heatmap(
+                    wins_view,
+                    label_col="team",
+                    value_cols=keep,
+                    title="Final win totals (top 25 by projected wins)",
+                    x_title="Wins",
+                    theme=theme,
+                ),
+                theme,
+            )
+
+    # --- playoff only --------------------------------------------------------------------------
+    st.subheader("Playoff only")
+    st.caption(
+        "Fix a twelve-team field and play just the bracket: exact odds, the chalk bracket with projected scores, "
+        "a Monte Carlo of the bracket, or a single play-through with sampled scores."
+    )
+    field_sources = (
+        ["Current bracket", "Projected bracket", "Custom field"]
+        if sim is not None
+        else ["Current bracket", "Custom field"]
+    )
+    field_src = st.radio(
+        "Field",
+        field_sources,
+        horizontal=True,
+        help="Current: if the season ended today. Projected: the simulation's modal field.",
+    )
+    if field_src == "Current bracket":
+        po_field = pic.field
+    elif field_src == "Projected bracket" and sim is not None:
+        po_field = sim.projected_field
+    else:
+        picked = st.multiselect(
+            "Teams in seed order (up to 12)",
+            real_names,
+            default=[s.team for s in pic.field],
+            max_selections=12,
+            help="The first team picked is the No. 1 seed. Fewer than twelve teams: the top seeds get the byes.",
         )
+        po_field = custom_field(picked, conf_map, {s.team for s in pic.field if s.champion}) if picked else []
+    if len(po_field) < 2:
+        st.warning("Pick at least two teams to play a bracket.")
+    else:
+        po_odds = bracket_odds(po_field, cfp_win_prob, cfp_scorer)
+        chalk = play_bracket(po_field, result, cal, scores=cfp_scores)
+        po_fav, po_p = po_odds.title_favourite()
+        final = next((g for g in po_odds.games if g.round == "final"), None)
+        kpi_row(
+            [
+                ("Title favourite", po_fav, f"{po_p:.0%} exact odds"),
+                ("Chalk champion", chalk.champion.team, f"seed {chalk.champion.seed}, favourite wins every game"),
+                (
+                    "Most likely final",
+                    f"{final.home.team} vs {final.away.team}" if final else NO_VALUE,
+                    f"projected {final.score.text}" if final and final.score else None,
+                ),
+            ]
+        )
+        po_view = st.radio(
+            "Show",
+            ["Chalk bracket", "Exact odds", "Monte Carlo", "One simulated playoff"],
+            horizontal=True,
+        )
+        if po_view == "Chalk bracket":
+            st.markdown(
+                bracket_html(chalk.games, logo_map, cfp_fmt.byes, later_note="favourite advances"),
+                unsafe_allow_html=True,
+            )
+            st.caption("The favourite wins every game; each score is the projected score for that matchup.")
+        elif po_view == "Exact odds":
+            st.markdown(bracket_html(po_odds.games, logo_map, cfp_fmt.byes), unsafe_allow_html=True)
+            po_df = po_odds.table.assign(logo=logos(po_odds.table["team"]))
+            st.dataframe(
+                percent_cols(po_df, ["p_quarter", "p_semi", "p_final", "p_title"])[
+                    ["seed", "logo", "team", "conference", "p_quarter", "p_semi", "p_final", "p_title"]
+                ],
+                hide_index=True,
+                width="stretch",
+                height=table_height(len(po_df)),
+                column_config={
+                    "seed": st.column_config.NumberColumn("Seed", width="small"),
+                    "logo": logo_col(),
+                    "team": "Team",
+                    "conference": "Conference",
+                    "p_quarter": pct_bar("Quarterfinal"),
+                    "p_semi": pct_bar("Semifinal"),
+                    "p_final": pct_bar("Final"),
+                    "p_title": pct_bar("Title"),
+                },
+            )
+        elif po_view == "Monte Carlo":
+            bn = int(st.select_slider("Bracket simulations", [1000, 2500, 5000, 10000], value=2500))
+            field_key = ",".join(f"{s.seed}:{s.team}" for s in po_field)
+            bs = bracket_sim_cached(params_json, data_key, field_key, bn, po_field, result, cal)
+            mc = bs.table.merge(
+                po_odds.table[["team", "p_title"]].rename(columns={"p_title": "exact_title"}), on="team"
+            )
+            mc = mc.assign(logo=logos(mc["team"]), diff=mc["p_title"] - mc["exact_title"])
+            mc_fav, mc_p = bs.title_favourite()
+            kpi_row(
+                [
+                    ("Simulated champion", mc_fav, f"won {mc_p:.1%} of {bs.n_sims} brackets"),
+                    ("Largest gap to exact odds", f"{mc['diff'].abs().max():.1%}", "shrinks as simulations grow"),
+                ]
+            )
+            st.dataframe(
+                percent_cols(mc, ["p_quarter", "p_semi", "p_final", "p_title", "exact_title"])[
+                    ["seed", "logo", "team", "p_quarter", "p_semi", "p_final", "p_title", "exact_title"]
+                ],
+                hide_index=True,
+                width="stretch",
+                height=table_height(len(mc)),
+                column_config={
+                    "seed": st.column_config.NumberColumn("Seed", width="small"),
+                    "logo": logo_col(),
+                    "team": "Team",
+                    "p_quarter": pct_bar("Quarterfinal"),
+                    "p_semi": pct_bar("Semifinal"),
+                    "p_final": pct_bar("Final"),
+                    "p_title": pct_bar("Title (simulated)", decimals=1),
+                    "exact_title": pct_num("Title (exact)", decimals=1),
+                },
+            )
+            st.caption("Every game drawn from its win probability; the frequencies converge to the exact odds.")
+        else:
+            draw = int(
+                st.number_input(
+                    "Draw number",
+                    min_value=1,
+                    max_value=99999,
+                    value=1,
+                    step=1,
+                    help="Any other number is another play-through.",
+                )
+            )
+            run = play_bracket(po_field, result, cal, scores=cfp_scores, rng=np.random.default_rng(draw))
+            upsets = sum(1 for g in run.games if (g.winner == g.home.team) != (g.p_home >= 0.5))
+            kpi_row(
+                [
+                    ("Champion", run.champion.team, f"seed {run.champion.seed}"),
+                    ("Upsets", str(upsets), f"of {len(run.games)} games, by the model's favourite"),
+                ]
+            )
+            st.markdown(bracket_html(run.games, logo_map, cfp_fmt.byes, later_note="as played"), unsafe_allow_html=True)
+            st.caption(
+                f"One play-through (draw {draw}): each margin is drawn around the model's spread with its "
+                f"calibrated error ({cal.sigma:.0f} pts) and each total around the matchup's projected total."
+            )
 
 # --- matchup ----------------------------------------------------------------------------------------
 
@@ -1216,19 +1722,30 @@ with tab_match:
         st.warning("Pick two different teams")
     else:
         matchup_header(home, away, neutral, team_by_name, theme, logo_map)
+        match_scores = score_model_cached(data_key, names, games, float(cal.intercept))
         rows = []
         for m in MODEL_NAMES:
             ws_m = warm_start_cached(m, params_json, data_key, names, all_games, season)
             res_m, cal_m = fit_cached(m, params_json, data_key, names, games, ws_m)
             p = cal_m.predict_game(res_m, home, away, neutral)
-            rows.append({"method": MODEL_LABELS[m], "line": p.spread, "home_margin": p.margin, "p_home": p.p_home})
+            rows.append(
+                {
+                    "method": MODEL_LABELS[m],
+                    "line": p.spread,
+                    "home_margin": p.margin,
+                    "p_home": p.p_home,
+                    "proj_score": match_scores.project(home, away, p.margin, neutral=neutral).text,
+                }
+            )
         df_m = pd.DataFrame(rows)
         consensus_margin = float(df_m["home_margin"].mean())
         consensus_p = float(df_m["p_home"].mean())
+        consensus_score = match_scores.project(home, away, consensus_margin, neutral=neutral)
         fav = home if consensus_margin >= 0 else away
         kpi_row(
             [
                 ("Consensus line", f"{fav} -{abs(consensus_margin):.1f}", "mean of all five models"),
+                ("Projected score", consensus_score.text, f"{home}-{away} · total {consensus_score.total:.0f}"),
                 (f"{home} win probability", f"{consensus_p:.0%}", "home" if not neutral else "neutral site"),
                 (f"{away} win probability", f"{1 - consensus_p:.0%}", "away" if not neutral else "neutral site"),
             ]
@@ -1243,6 +1760,7 @@ with tab_match:
                 "line": "Line",
                 "home_margin": st.column_config.NumberColumn("Home margin", format="%+.1f"),
                 "p_home": pct_bar("Home win prob", decimals=1),
+                "proj_score": st.column_config.TextColumn("Proj. score", help="Home-away"),
             },
         )
 

@@ -274,3 +274,51 @@ its win probability (ratings held fixed, PPoints kept at its current value), set
 standings and the title games, ranks with the committee proxy on the simulated records, selects
 and seeds the field, and then takes the exact bracket odds for that field, so the title
 probabilities average exact numbers rather than coin flips.
+
+**Everything the simulation records.** Each simulated season also yields every team's final
+record (so the projected record is a mean over simulations that includes a conference title
+game when the team reaches one, and the *most likely* record is the modal wins–losses pair), the
+probability of finishing undefeated, of reaching and of winning the conference title game, the
+title-game pairings themselves (how often each pair met, at which site, with the favourite's
+chance in that game), and the distribution of seeds. A neutral-site projected title game is the
+same pairing whichever side led the standings; a hosted one keeps the leader as the host.
+
+**The bracket on its own.** For a fixed field — the bracket if the season ended today, the
+simulation's modal field, or a hand-picked one of up to twelve teams — the exact odds above are
+complemented by three ways of playing it out: the *chalk* bracket, in which the favourite wins
+every game and each game carries its projected score; a Monte Carlo of the bracket alone, in
+which every game is a draw from its win probability (its frequencies converge to the exact odds
+and are shown beside them); and a single play-through, in which each game's margin is drawn
+from a normal distribution around the model's spread with the calibrated error $\sigma$ (section 2)
+and its total around the projected total (section 8), so the sampled scores decide the winners.
+
+## 8. Projected scores
+
+A rating model says *by how much* a team should win; a score needs one more number, the game's
+total. Every completed game of the season in hand contributes two observations,
+
+$$
+\text{pts}_{\text{home}} = \mu + O_{\text{home}} + D_{\text{away}} + h, \qquad
+\text{pts}_{\text{away}} = \mu + O_{\text{away}} + D_{\text{home}} - h,
+$$
+
+where $\mu$ is the league's mean points per team per game, $O_i$ is team $i$'s offence (points
+scored above the mean, adjusted for the defences it faced), $D_i$ its defence (points *allowed*
+above the mean, so positive is leaky) and $h$ half the home-field advantage of section 2. $O$
+and $D$ are fitted by ridge least squares with a penalty of 4 points²·games on each term, which
+shrinks a team with few games toward average and leaves one with many alone; a season with no
+completed games gets $\mu = 27.5$ and every team average. The projected total of a matchup is
+
+$$
+T = 2\mu + O_{\text{home}} + D_{\text{away}} + O_{\text{away}} + D_{\text{home}},
+$$
+
+and the projected score splits it around the calibrated margin $m$ of section 2:
+$\text{home} = (T + m)/2$, $\text{away} = (T - m)/2$. The margin is the better-calibrated number
+(it is what the ratings are fitted to), so it is always taken from the ratings and only the
+total from this model; the total is never allowed below $|m| + 6$, so a projected loser scores
+at least 3. Scores are shown rounded, nudged by a point when rounding would produce a tie. For a
+sampled score (a single simulated playoff) the margin is drawn from $N(m, \sigma^2)$ with the
+calibrator's $\sigma$ and the total from $N(T, \sigma_T^2)$ with $\sigma_T$ the residual standard
+deviation of the fitted totals (17 points until twenty games have been played). No further API
+call is involved: the model uses only the games already loaded for the ratings.

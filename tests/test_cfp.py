@@ -336,3 +336,172 @@ def test_simulation_respects_played_title_game():
     pic = playoff_picture(teams, games, result, cal, fmt=fmt)
     assert pic.champions["X"].decided and pic.champions["X"].team == "C"
     assert not pic.champions["Y"].decided and {pic.champions["Y"].team, pic.champions["Y"].opponent} == {"E", "G"}
+
+
+# --- projections, title games, records and the bracket played out ------------------------------------
+
+
+def _fitted(seed=3, played_through=8):
+    from cfbratings.scores import fit_score_model
+
+    season = synthetic_season(
+        season=2026, n_teams=48, n_conferences=6, weeks=12, played_through=played_through, seed=seed
+    )
+    names = season.team_names
+    model = make_model("massey")
+    result = model.fit(names, season.games)
+    cal = MarginCalibrator.fit_cv(model, names, season.games, fallback_hfa=2.5)
+    return season, result, cal, fit_score_model(names, season.games, hfa=cal.intercept)
+
+
+def test_game_projections_cover_every_unplayed_game_with_scores():
+    from cfbratings.cfp import GAME_PROJECTION_COLUMNS, game_projections
+
+    season, result, cal, scores = _fitted()
+    df = game_projections(season.games, result, cal, scores=scores)
+    unplayed = [g for g in season.games if not g.has_score]
+    assert len(df) == len(unplayed) and list(df.columns) == list(GAME_PROJECTION_COLUMNS)
+    assert df["week"].is_monotonic_increasing
+    assert ((df["p_home"] > 0) & (df["p_home"] < 1)).all()
+    assert (df["p_favorite"] >= 0.5).all()
+    # the favourite is on the right side of the margin, and the projected score agrees with both
+    home_fav = df["margin"] >= 0
+    assert (df.loc[home_fav, "favorite"] == df.loc[home_fav, "home_name"]).all()
+    assert (df.loc[~home_fav, "favorite"] == df.loc[~home_fav, "away_name"]).all()
+    assert ((df["proj_home"] > df["proj_away"]) == home_fav).all()
+    assert (df["proj_home"] + df["proj_away"] - df["proj_total"]).abs().max() <= 2.0  # rounding plus a tie nudge
+    assert df["line"].str.contains(r" -\d+\.\d$").all()
+    # without a score model the score columns are empty
+    bare = game_projections(season.games, result, cal)
+    assert bare["proj_score"].isna().all() and len(bare) == len(df)
+
+
+def test_simulation_reports_records_title_games_and_seeds():
+    from cfbratings.projections import projection_table
+
+    season, result, cal, scores = _fitted()
+    sim = simulate_playoff(season.teams, season.games, result, cal, n_sims=150, seed=5, scores=scores)
+    t = sim.table.set_index("team")
+    names = season.team_names
+    recs = projection_table(names, season.games, result, cal)
+    # mean final wins agree with the exact Poisson-binomial projection, give or take a title game and noise
+    merged = t.join(recs.set_index("team")[["proj_wins"]].rename(columns={"proj_wins": "proj_wins_exact"}))
+    assert (merged["proj_wins"] - merged["proj_wins_exact"]).abs().max() < 1.2
+    assert (merged["proj_wins"] >= merged["proj_wins_exact"] - 0.5).all()  # a title game can only add wins
+    for _team, row in t.iterrows():
+        w, losses = (int(x) for x in row["mode_record"].split("-"))
+        assert w + losses >= sum(int(x) for x in row["record"].split("-"))
+        assert 0 < row["p_mode_record"] <= 1
+    assert ((t["p_undefeated"] >= 0) & (t["p_undefeated"] <= 1)).all()
+    assert (t.loc[t["p_undefeated"] > 0, "record"].str.endswith("-0")).all()
+    assert ((t["p_title_game"] >= t["p_champion"] - 1e-9) & (t["p_title_game"] <= 1)).all()
+    # title games: per conference the matchup probabilities sum to one, and each pairing's favourite is consistent
+    tg = sim.title_games
+    assert set(tg["conference"]) == set(sim.champions["conference"]) and not tg["decided"].any()
+    for _, grp in tg.groupby("conference"):
+        assert grp["p_matchup"].sum() == pytest.approx(1.0)
+        assert (grp["p_favorite"] >= 0.5).all()
+        assert grp["proj_score"].str.match(r"^\d+-\d+$").all()
+        assert ((grp["favorite"] == grp["home"]) == (grp["p_home"] >= 0.5)).all()
+    ch = sim.champions
+    assert ((ch["p_title_game"] >= ch["p_champion"]) & (ch["p_title_game"] <= 1)).all()
+    for _, grp in ch.groupby("conference"):
+        assert grp["p_champion"].sum() == pytest.approx(1.0)
+        assert grp["p_title_game"].sum() == pytest.approx(2.0, abs=1e-9)  # two teams per title game
+    # seeds: rows sum to p_playoff, and p_playoff sums to the field size
+    seed_cols = [str(k) for k in range(1, 13)]
+    assert (sim.seeds[seed_cols].sum(axis=1) - sim.seeds["p_playoff"]).abs().max() < 1e-9
+    assert sim.seeds["p_playoff"].sum() == pytest.approx(12.0)
+    # win totals: every row is a distribution
+    win_cols = [c for c in sim.wins.columns if c not in ("team", "conference")]
+    assert np.allclose(sim.wins[win_cols].sum(axis=1), 1.0)
+    # the projected bracket carries projected scores
+    assert all(g.score is not None for g in sim.projected_odds.games)
+
+
+def test_neutral_title_game_is_one_matchup_whoever_leads():
+    season, result, cal, _scores = _fitted(seed=9)
+    sim = simulate_playoff(season.teams, season.games, result, cal, n_sims=120, seed=2)
+    tg = sim.title_games
+    for _, grp in tg[tg["neutral"]].groupby("conference"):
+        pairs = [frozenset((h, a)) for h, a in zip(grp["home"], grp["away"])]
+        assert len(pairs) == len(set(pairs))  # no pairing listed twice in the other order
+
+
+def test_custom_field_and_chalk_bracket():
+    from cfbratings.cfp import custom_field, play_bracket, played_bracket_lines
+
+    season, result, cal, scores = _fitted()
+    order = [t for t, _ in result.ranked()][:12]
+    field = custom_field(order, season.conference_map)
+    assert [s.seed for s in field] == list(range(1, 13)) and all(s.bid == "custom" for s in field)
+    with pytest.raises(ValueError):
+        custom_field([*order, "extra"], season.conference_map)
+    with pytest.raises(ValueError):
+        custom_field(order[:2] + order[:1], season.conference_map)
+    run = play_bracket(field, result, cal, scores=scores)
+    assert not run.sampled and len(run.games) == 11 and run.games[0].round == "first"
+    for g in run.games:
+        assert g.home.seed < g.away.seed
+        assert (g.winner == g.home.team) == (g.p_home >= 0.5)  # chalk: the favourite wins
+        assert g.score is not None and (g.score.margin >= 0) == (g.winner == g.home.team)
+    # with every favourite winning and seeds in rating order, the No. 1 seed takes the title
+    assert run.champion.team == order[0]
+    lines = played_bracket_lines(run)
+    assert lines[0] == "First round:" and lines[-1].startswith("Champion: (1)")
+    # a smaller field: byes to the top seeds, fewer games
+    small = play_bracket(custom_field(order[:6], season.conference_map), result, cal)
+    assert len(small.games) == 5 and small.games[-1].round == "final"
+
+
+def test_sampled_bracket_is_a_valid_play_through():
+    from cfbratings.cfp import custom_field, play_bracket
+
+    season, result, cal, scores = _fitted()
+    field = custom_field([t for t, _ in result.ranked()][:12], season.conference_map)
+    seen = set()
+    for draw in range(6):
+        run = play_bracket(field, result, cal, scores=scores, rng=np.random.default_rng(draw))
+        assert run.sampled and len(run.games) == 11
+        for g in run.games:
+            assert g.winner in (g.home.team, g.away.team)
+            assert g.score is not None and (g.score.margin > 0) == (g.winner == g.home.team)
+            assert round(g.score.margin) != 0
+        final = run.games[-1]
+        assert final.round == "final" and run.champion.team == final.winner
+        seen.add(run.champion.team)
+    assert len(seen) >= 2  # draws differ
+    # no score model: Bernoulli draws, no scores
+    run = play_bracket(field, result, cal, rng=np.random.default_rng(1))
+    assert all(g.score is None for g in run.games)
+
+
+def test_bracket_monte_carlo_converges_to_exact_odds():
+    from cfbratings.cfp import calibrated_win_prob, custom_field, simulate_bracket
+
+    season, result, cal, _ = _fitted()
+    field = custom_field([t for t, _ in result.ranked()][:12], season.conference_map)
+    wp = calibrated_win_prob(result, cal)
+    exact = bracket_odds(field, wp).table.set_index("team")
+    sim = simulate_bracket(field, wp, n_sims=6000, seed=1)
+    t = sim.table.set_index("team")
+    assert sim.n_sims == 6000 and sum(sim.champions.values()) == 6000
+    for col in ("p_quarter", "p_semi", "p_final", "p_title"):
+        assert (t[col] - exact[col]).abs().max() < 0.03
+    assert t.loc[[s.team for s in field if s.seed <= 4], "p_quarter"].eq(1.0).all()
+    fav, p = sim.title_favourite()
+    assert fav == exact["p_title"].idxmax() and 0 < p <= 1
+
+
+def test_bracket_odds_carry_projected_scores_when_asked():
+    from cfbratings.cfp import calibrated_scorer, calibrated_win_prob, custom_field
+
+    season, result, cal, scores = _fitted()
+    field = custom_field([t for t, _ in result.ranked()][:12], season.conference_map)
+    odds = bracket_odds(field, calibrated_win_prob(result, cal), calibrated_scorer(result, cal, scores))
+    assert all(g.score is not None for g in odds.games)
+    for g in odds.games:
+        assert (g.score.margin >= 0) == (g.p_home >= 0.5)
+    assert any("proj." in line for line in bracket_lines(odds))
+    pic = playoff_picture(season.teams, season.games, result, cal, scores=scores)
+    assert all(g.score is not None for g in pic.odds.games)

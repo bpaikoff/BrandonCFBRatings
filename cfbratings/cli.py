@@ -23,7 +23,18 @@ import pandas as pd
 from . import __version__
 from .analytics import conference_table, independents_table, schedule_table, team_table
 from .backtest import compare_methods, grid_search
-from .cfp import FORMATS, SeedingWeights, bracket_lines, format_for, playoff_picture, simulate_playoff
+from .cfp import (
+    FORMATS,
+    SeedingWeights,
+    bracket_lines,
+    calibrated_win_prob,
+    format_for,
+    play_bracket,
+    played_bracket_lines,
+    playoff_picture,
+    simulate_bracket,
+    simulate_playoff,
+)
 from .config import Settings
 from .config import settings as default_settings
 from .data import CFBDClient, CFBDError, Game, JsonCache, Team, load_seasons, synthetic_seasons
@@ -34,6 +45,7 @@ from .ppoints import ppoints as _ppoints
 from .predict import MarginCalibrator
 from .priors import WarmStart, warm_start
 from .projections import projection_table
+from .scores import fit_score_model
 from .snapshots import trajectory, weekly_snapshots
 
 log = logging.getLogger("cfbratings")
@@ -279,6 +291,7 @@ def cmd_predict(args: argparse.Namespace) -> int:
             model, names, season_games, fallback_hfa=s.home_field_adv, prior=ws.prior, fallback=ws.calibrator
         )
         pred = cal.predict_game(result, args.home, args.away, args.neutral)
+        scores = fit_score_model(names, season_games, hfa=cal.intercept)
         rows.append(
             {
                 "method": MODEL_LABELS.get(m, m),
@@ -286,6 +299,7 @@ def cmd_predict(args: argparse.Namespace) -> int:
                 "home_margin": pred.margin,
                 "p_home": pred.p_home,
                 "p_away": 1 - pred.p_home,
+                "proj_score": scores.project(args.home, args.away, pred.margin, neutral=args.neutral).text_by_favorite,
             }
         )
     site = "neutral site" if args.neutral else f"at {args.home}"
@@ -349,7 +363,8 @@ def cmd_cfp(args: argparse.Namespace) -> int:
         pp = _ppoints(names, games, result.ratings, conf_map, snaps)
     weights = SeedingWeights.parse(args.weights)
     fmt = FORMATS[args.format] if args.format else format_for(season)
-    pic = playoff_picture(teams, games, result, cal, ppoints=pp, weights=weights, fmt=fmt)
+    scores = fit_score_model(names, games, hfa=cal.intercept)
+    pic = playoff_picture(teams, games, result, cal, ppoints=pp, weights=weights, fmt=fmt, scores=scores)
     label = MODEL_LABELS.get(args.method, args.method)
     print(f"\nPlayoff picture — {label} — {season} — {source} — {note}")
     print(f"format {pic.fmt.name}: {pic.fmt.summary}")
@@ -371,13 +386,76 @@ def cmd_cfp(args: argparse.Namespace) -> int:
     cols = ["seed", "team", "conference", "bid", "p_quarter", "p_semi", "p_final", "p_title"]
     _print_df(pic.odds.table[cols])
     table = pic.odds.table
+    if args.chalk and pic.field:
+        print(f"\nChalk bracket (the favourite wins every game; scores projected on {scores.n_games} games):")
+        print(
+            "\n".join("  " + line for line in played_bracket_lines(play_bracket(pic.field, result, cal, scores=scores)))
+        )
+    if args.bracket_sims and pic.field:
+        bs = simulate_bracket(pic.field, calibrated_win_prob(result, cal), n_sims=args.bracket_sims, seed=args.seed)
+        fav, p_fav = bs.title_favourite()
+        print(f"\nThis bracket simulated {bs.n_sims} times ({fav} won {p_fav:.1%}):\n")
+        _print_df(bs.table)
     if args.sims:
         sim = simulate_playoff(
-            teams, games, result, cal, ppoints=pp, weights=weights, fmt=fmt, n_sims=args.sims, seed=args.seed
+            teams,
+            games,
+            result,
+            cal,
+            ppoints=pp,
+            weights=weights,
+            fmt=fmt,
+            n_sims=args.sims,
+            seed=args.seed,
+            scores=scores,
         )
         print(f"\nRest of season simulated {sim.n_sims} times:\n")
-        cols = ["team", "conference", "record", "p_champion", "p_playoff", "p_bye", "mean_seed", "p_title"]
+        cols = [
+            "team",
+            "conference",
+            "record",
+            "proj_record",
+            "p_champion",
+            "p_playoff",
+            "p_bye",
+            "mean_seed",
+            "p_title",
+        ]
         _print_df(sim.table[cols].head(args.top))
+        print("\nProjected records (most likely final record and its frequency):\n")
+        recs = sim.table.sort_values(["proj_wins", "p_title"], ascending=False).head(args.top)
+        _print_df(
+            recs[
+                [
+                    "team",
+                    "conference",
+                    "record",
+                    "proj_record",
+                    "mode_record",
+                    "p_mode_record",
+                    "p_undefeated",
+                    "p_title_game",
+                ]
+            ]
+        )
+        print("\nProjected title games (the most likely matchup per conference):\n")
+        tg = sim.title_games.sort_values("p_matchup", ascending=False).groupby("conference", sort=False).head(1)
+        tg = tg.sort_values("conference")
+        _print_df(
+            tg[
+                [
+                    "conference",
+                    "away",
+                    "home",
+                    "neutral",
+                    "p_matchup",
+                    "favorite",
+                    "p_favorite",
+                    "proj_score",
+                    "decided",
+                ]
+            ]
+        )
         print("\nProjected bracket (modal champions, mean committee score):")
         print("\n".join("  " + line for line in bracket_lines(sim.projected_odds)))
         table = sim.table
@@ -578,6 +656,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("cfp", help="the Playoff picture: conference races, bracket, odds (--sims for projections)")
     add_model_args(p)
     p.add_argument("--sims", type=int, default=0, help="simulate the rest of the season this many times")
+    p.add_argument(
+        "--chalk", action="store_true", help="play the current bracket out with the favourites and projected scores"
+    )
+    p.add_argument(
+        "--bracket-sims", type=int, default=0, help="Monte Carlo of the current bracket alone, this many times"
+    )
     p.add_argument("--weights", help="committee proxy, e.g. rating=1,resume=0.5,loss=0.35,champion=0.15")
     p.add_argument("--format", type=int, choices=sorted(FORMATS), help="playoff rules to apply (default: the season's)")
     p.add_argument("--top", type=int, default=25, help="rows of the simulated table to print")
