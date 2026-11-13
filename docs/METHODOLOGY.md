@@ -269,11 +269,18 @@ its own strongest conferences.
 **Odds.** For a fixed bracket the probability that a team reaches each round is computed
 exactly: $P(i \text{ wins a game}) = P(i \text{ reaches it}) \sum_j P(j \text{ reaches it})\,p_{ij}$ over
 every possible opponent $j$, with $p_{ij}$ the calibrated win probability for that site. The
-rest-of-season projection is a Monte Carlo: each simulation samples every unplayed game from
-its win probability (ratings held fixed, PPoints kept at its current value), settles the
-standings and the title games, ranks with the committee proxy on the simulated records, selects
-and seeds the field, and then takes the exact bracket odds for that field, so the title
-probabilities average exact numbers rather than coin flips.
+rest-of-season projection is a Monte Carlo of whole seasons. Each simulation samples every
+unplayed game from its win probability (the ratings — the model's view of each team's strength —
+are held fixed), settles the standings and the title games, re-scores every team's PPoints résumé
+on the season as played (each simulated game adds what it is worth to the winner and costs the
+loser its penalty, with the opponent's tier and conference strength read from the current ratings,
+since an unplayed game has no entering-week snapshot), ranks with the committee proxy on the
+simulated records, résumés and champions, selects and seeds the field, and then plays the bracket
+game by game, each game a draw from its win probability. Every probability it reports — making
+the field, a bye, each seed, each round, the title — is a frequency over these play-throughs, so
+the seeds and the results are the simulation's own rather than those of the bracket the current
+week implies; the exact recursion above remains the lower-variance answer for a *fixed* bracket
+and is what the "if the season ended today" odds use.
 
 **Everything the simulation records.** Each simulated season also yields every team's final
 record (so the projected record is a mean over simulations that includes a conference title
@@ -281,7 +288,14 @@ game when the team reaches one, and the *most likely* record is the modal wins�
 probability of finishing undefeated, of reaching and of winning the conference title game, the
 title-game pairings themselves (how often each pair met, at which site, with the favourite's
 chance in that game), and the distribution of seeds. A neutral-site projected title game is the
-same pairing whichever side led the standings; a hosted one keeps the leader as the host.
+same pairing whichever side led the standings; a hosted one keeps the leader as the host. From the
+simulated playoffs come the national championship games (how often each pair met, the model's
+favourite in that game and how often it actually won those finals), how often each seed reached
+the final and won the title, and a *simulated bracket*: the projected field — each conference's
+most frequent champion, teams ordered by their mean committee score over the simulated seasons,
+selected and seeded under the format's rules — with, from the quarterfinals on, the pair of teams
+from the two sides of each game that met there most often across the play-throughs (each shown
+with the model's chance and projected score for that matchup).
 
 **The bracket on its own.** For a fixed field — the bracket if the season ended today, the
 simulation's modal field, or a hand-picked one of up to twelve teams — the exact odds above are

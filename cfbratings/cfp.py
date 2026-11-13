@@ -18,8 +18,9 @@ calibrated win probabilities as the rest of the package:
    straight seeding, first round at the higher seed's home, every later round neutral.
 5. **Odds**: exact advancement probabilities for a fixed bracket (:func:`bracket_odds`) and a
    Monte Carlo of the rest of the season (:func:`simulate_playoff`) that plays every unplayed
-   game, settles the standings and title games, ranks, selects, seeds and then scores the
-   bracket exactly, so title odds carry little simulation noise.
+   game, settles the standings and title games, re-scores the résumés, ranks, selects, seeds
+   and then plays the bracket out, so the seeds, the finals and the champions are the
+   simulation's own.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ import pandas as pd
 from .analytics import conference_strength, records
 from .data.schema import Game, Record, Team, is_independent, is_pool_team
 from .models.base import RatingResult
+from .ppoints import PPointsConfig, PPointsScorer
 from .predict import MarginCalibrator
 from .scores import ProjectedScore, ScoreModel
 
@@ -696,13 +698,18 @@ def playoff_picture(
 
 # --- Monte Carlo ------------------------------------------------------------------------------------
 
+FINAL_COLUMNS: tuple[str, ...] = (
+    "home", "away", "p_matchup", "p_home", "favorite", "p_favorite", "p_favorite_sim", "proj_score",
+)  # fmt: skip
+
 
 @dataclass
 class PlayoffSimulation:
     n_sims: int
     fmt: CFPFormat
     #: one row per team: record now, projected and most likely final record, p_undefeated,
-    #: p_title_game, p_champion, p_playoff, p_bye, mean_seed, p_quarter … p_title, committee_score
+    #: p_title_game, p_champion, p_playoff, p_bye, mean_seed, p_quarter … p_title (how often the team
+    #: played in each round of the simulated playoffs and won the last one), committee_score
     table: pd.DataFrame
     champions: pd.DataFrame  # conference, team, p_title_game, p_champion
     #: conference, home, away, neutral, p_matchup, p_home, favorite, proj_score, decided: every title
@@ -710,8 +717,98 @@ class PlayoffSimulation:
     title_games: pd.DataFrame
     seeds: pd.DataFrame  # team, conference, p_playoff, then P(seed = k) in columns "1" … "field_size"
     wins: pd.DataFrame  # team, conference, then P(final wins = k) in columns "0" … max games
-    projected_field: list[Seed]  # the modal champions and the mean committee score, seeded
-    projected_odds: BracketOdds
+    #: seed, p_final, p_title: how often the team seeded k reached the final and won the title
+    title_seeds: pd.DataFrame
+    #: every national championship game the simulations produced (:data:`FINAL_COLUMNS`): how often
+    #: the pair met, the model's favourite and its chance, and how often it actually won those finals
+    finals: pd.DataFrame
+    #: the projected field: each conference's most likely champion, teams ordered by their mean
+    #: committee score over the simulated seasons, selected and seeded under the format's rules
+    projected_field: list[Seed]
+    #: that field's bracket: its first round, then in every later game the pair of teams from the two
+    #: sides that feed it which met there most often in the simulated playoffs, each game with its
+    #: calibrated P(home) and projected score when a score model was given
+    projected_bracket: list[BracketGame]
+
+    @property
+    def champion(self) -> tuple[str, float]:
+        """The most frequent national champion and its title frequency."""
+        row = self.table.sort_values(["p_title", "p_playoff"], ascending=False).iloc[0]
+        return str(row["team"]), float(row["p_title"])
+
+
+PlayedDraw = tuple[str, Seed, Seed, bool, bool]  # round, home (the higher seed), away, neutral, home won
+
+
+def _play_through(tree: _Node, win_prob: WinProb, rng: np.random.Generator) -> tuple[Seed, list[PlayedDraw]]:
+    """Play the tree once, every game a draw: the champion and one entry per game played."""
+    played: list[PlayedDraw] = []
+
+    def play(node: _Node) -> Seed:
+        if node[0] == "seed":
+            return node[1]
+        _, rnd, left, right, neutral = node
+        a, b = play(left), play(right)
+        home, away = (a, b) if a.seed < b.seed else (b, a)
+        home_won = bool(rng.random() < win_prob(home.team, away.team, neutral))
+        played.append((rnd, home, away, neutral, home_won))
+        return home if home_won else away
+
+    return play(tree), played
+
+
+def _teams_under(node: _Node) -> set[str]:
+    return {node[1].team} if node[0] == "seed" else _teams_under(node[2]) | _teams_under(node[3])
+
+
+def _projected_bracket(
+    field: Sequence[Seed],
+    round_pairs: Mapping[str, Counter],
+    reached: Mapping[str, Mapping[str, float]],
+    win_prob: WinProb,
+    scorer: Scorer | None,
+) -> list[BracketGame]:
+    """The field's bracket with the simulations' most frequent matchups in the later rounds.
+
+    The first round follows from the seeds. Every later game is between the two sides of the
+    field that feed it and shows the pair of teams, one from each side, that met most often in
+    that round across the play-throughs (whatever seeds they held then); when no such pair ever
+    met there, each side sends the team that reached the round most often. ``round_pairs[round]``
+    counts the pairs met (better-rated team first) and ``reached[round][team]`` the appearances.
+    """
+    if not field:
+        return []
+    games: list[BracketGame] = []
+    by_team = {s.team: s for s in field}
+
+    def walk(node: _Node) -> None:
+        if node[0] == "seed":
+            return
+        _, rnd, left, right, neutral = node
+        walk(left)
+        walk(right)
+        left_teams, right_teams = _teams_under(left), _teams_under(right)
+        across: Counter = Counter()
+        for (x, y), c in round_pairs.get(rnd, Counter()).items():
+            if (x in left_teams and y in right_teams) or (x in right_teams and y in left_teams):
+                across[(x, y)] += c
+        if across:
+            pair = across.most_common(1)[0][0]
+        else:
+            hits = reached.get(rnd, {})
+            pair = tuple(
+                max(side, key=lambda t: (hits.get(t, 0.0), -by_team[t].seed)) for side in (left_teams, right_teams)
+            )
+        home, away = sorted((by_team[pair[0]], by_team[pair[1]]), key=lambda s: s.seed)
+        p = win_prob(home.team, away.team, neutral)
+        games.append(
+            BracketGame(rnd, home, away, neutral, p, scorer(home.team, away.team, neutral) if scorer else None)
+        )
+
+    walk(_bracket_tree(field))
+    order = {r: i for i, r in enumerate(ROUNDS)}
+    games.sort(key=lambda g: (order[g.round], g.home.seed))
+    return games
 
 
 def simulate_playoff(
@@ -726,18 +823,25 @@ def simulate_playoff(
     n_sims: int = 2000,
     seed: int = 0,
     scores: ScoreModel | None = None,
+    ppoints_config: PPointsConfig | None = None,
 ) -> PlayoffSimulation:
-    """Play out the rest of the season ``n_sims`` times and tally everything that follows.
+    """Play out the rest of the season ``n_sims`` times, playoff included, and tally what follows.
 
-    Each simulation samples every unplayed game from its calibrated win probability (ratings
-    are held fixed), settles the conference standings and title games, ranks the teams with
-    the committee proxy on the simulated records, selects and seeds the field, and then takes
-    the *exact* bracket odds for that field, so the title probabilities average exact numbers
-    rather than coin flips. Along the way it records every team's final record, title-game
-    appearances, conference titles and seeds, and every title-game matchup that came up. The
-    résumé term keeps its current value: PPoints is not re-scored inside a simulation. With a
-    :class:`~cfbratings.scores.ScoreModel` the title games and the projected bracket carry
-    projected scores.
+    Each simulation samples every unplayed game from its calibrated win probability (the
+    ratings -- the model's view of how good each team is -- are held fixed), settles the
+    conference standings and title games, re-scores every team's résumé on the season it just
+    played, ranks the teams with the committee proxy on the simulated records, résumés and
+    champions, selects and seeds the field, and then plays the bracket game by game, each game
+    a draw. Every probability reported is a frequency over these play-throughs: the seeds, the
+    rounds reached, the finals and the national champions all come out of the simulation
+    itself, not out of the bracket the current week implies.
+
+    ``ppoints`` is the résumé scored on the games played so far (``None`` turns the résumé term
+    off, as the CLI's ``--no-ppoints`` does). Each simulated game then adds what it is worth to
+    its winner and takes what it costs from its loser (:meth:`PPointsScorer.credit`), with the
+    opponent's tier and conference strength read from the current ratings, since a game not yet
+    played has no entering-week snapshot. With a :class:`~cfbratings.scores.ScoreModel` the title
+    games, the finals and the projected bracket carry projected scores.
     """
     rng = np.random.default_rng(seed)
     all_names = [t.school for t in teams]  # the pooled FCS team included: its games count in records
@@ -783,6 +887,28 @@ def simulate_playoff(
 
     n = len(all_names)
     arange = np.arange(n)
+
+    # The résumé: what every unplayed game is worth to each side, so each simulated season's
+    # PPoints is the current score plus the credits of the games it decided (one matrix product).
+    rescore = ppoints is not None
+    pp_scorer = PPointsScorer(all_names, result.ratings, conf_of, config=ppoints_config) if rescore else None
+    pp_all = np.zeros((0, 0))
+    if rescore:
+        pp_base = np.array([float(ppoints.get(t, 0.0)) for t in all_names])  # type: ignore[union-attr]
+        if pending:
+            home_win_credit = np.zeros((len(pending), n))
+            away_win_credit = np.zeros((len(pending), n))
+            for i, g in enumerate(pending):
+                c = pp_scorer.credit(g)  # type: ignore[union-attr]
+                home_win_credit[i, home_idx[i]] += c.home_win
+                home_win_credit[i, away_idx[i]] -= c.away_loss
+                away_win_credit[i, away_idx[i]] += c.away_win
+                away_win_credit[i, home_idx[i]] -= c.home_loss
+            d = draws.astype(float)
+            pp_all = pp_base + d @ home_win_credit + (1.0 - d) @ away_win_credit
+        else:
+            pp_all = np.tile(pp_base, (n_sims, 1))
+
     left = np.zeros(n, dtype=int)
     if pending:
         np.add.at(left, home_idx, 1)
@@ -805,6 +931,14 @@ def simulate_playoff(
     conf_game_ids = {
         conf: [i for i, g in enumerate(pending) if is_conf[i] and conf_of.get(g.home) == conf] for conf in members
     }
+    # the playoffs as played: who met whom in every round, who won the finals, the champions' seeds
+    round_pairs: dict[str, Counter] = {r: Counter() for r in ROUNDS}  # (better-rated team, other) → meetings
+    final_first_wins: Counter = Counter()  # finals won by the better-rated side of the pair
+    title_seed_hist = np.zeros(fmt.field_size + 1)
+    final_seed_hist = np.zeros(fmt.field_size + 1)
+
+    def better_first(a: str, b: str) -> tuple[str, str]:
+        return (a, b) if (result.ratings.get(a, 0.0), a) >= (result.ratings.get(b, 0.0), b) else (b, a)
 
     for s in range(n_sims):
         row = draws[s]
@@ -813,6 +947,7 @@ def simulate_playoff(
         if pending:
             np.add.at(wins, np.where(row, home_idx, away_idx), 1)
             np.add.at(losses, np.where(row, away_idx, home_idx), 1)
+        pp = pp_all[s] if rescore else None
         champions: dict[str, str] = dict(decided)
         matchups: dict[str, tuple[str, str, bool]] = {}  # this simulation's title games
         for conf, schools in members.items():
@@ -840,16 +975,9 @@ def simulate_playoff(
             neutral = conf in fmt.neutral_championships
             # At a neutral site the pairing is the same whichever side led the standings, so it is
             # keyed with the better-rated team first; a hosted game keeps the leader as the host.
-            matchups[conf] = (
-                (
-                    max(a, b, key=lambda t: (result.ratings.get(t, 0.0), t)),
-                    min(a, b, key=lambda t: (result.ratings.get(t, 0.0), t)),
-                    True,
-                )
-                if neutral
-                else (a, b, False)
-            )
-            if rng.random() < win_prob(a, b, neutral):
+            matchups[conf] = (*better_first(a, b), True) if neutral else (a, b, False)
+            a_won = rng.random() < win_prob(a, b, neutral)
+            if a_won:
                 champions[conf] = a
                 wins[index[a]] += 1
                 losses[index[b]] += 1
@@ -857,6 +985,14 @@ def simulate_playoff(
                 champions[conf] = b
                 wins[index[b]] += 1
                 losses[index[a]] += 1
+            if pp is not None:  # the projected title game counts in the résumé like any other game
+                c = pp_scorer.credit_for(a, b, neutral=neutral, home_conference=conf, away_conference=conf)  # type: ignore[union-attr]
+                if a_won:
+                    pp[index[a]] += c.home_win
+                    pp[index[b]] -= c.away_loss
+                else:
+                    pp[index[b]] += c.away_win
+                    pp[index[a]] -= c.home_loss
         for conf, matchup in matchups.items():
             tg_pairs[conf][matchup] += 1
             tg_count[index[matchup[0]]] += 1
@@ -873,7 +1009,7 @@ def simulate_playoff(
             names,
             result.ratings,
             {t: int(losses[index[t]]) for t in names},
-            ppoints=ppoints,
+            ppoints={t: float(pp[index[t]]) for t in names} if pp is not None else None,
             champions=champ_set,
             weights=weights,
         )
@@ -881,7 +1017,20 @@ def simulate_playoff(
             score_sum[index[t]] += v
         ranking = sorted(scores_now, key=lambda t: (-scores_now[t], t))
         field = select_field(ranking, champions, conf_of, fmt)
-        _, probs = _bracket_probs(field, win_prob)
+        if not field:
+            continue
+        champion, played = _play_through(_bracket_tree(field), win_prob, rng)
+        in_round: dict[str, set[str]] = {r: set() for r in ROUNDS}
+        for rnd, home, away, _neutral, home_won in played:
+            in_round[rnd].add(home.team)
+            in_round[rnd].add(away.team)
+            pair = better_first(home.team, away.team)
+            round_pairs[rnd][pair] += 1
+            if rnd == "final":
+                if (home.team if home_won else away.team) == pair[0]:
+                    final_first_wins[pair] += 1
+                final_seed_hist[home.seed] += 1
+                final_seed_hist[away.seed] += 1
         for sd in field:
             i = index[sd.team]
             tally["p_playoff"][i] += 1
@@ -889,8 +1038,16 @@ def simulate_playoff(
             seed_hist[i, sd.seed] += 1
             if sd.seed <= fmt.byes:
                 tally["p_bye"][i] += 1
-            for k in ("quarter", "semi", "final", "title"):
-                tally[f"p_{k}"][i] += probs[k][sd.team]
+            # a team plays a quarterfinal after a bye or a first-round win; a bracket too small for
+            # quarterfinals counts its top four as having reached that stage, as the exact odds do
+            if sd.team in in_round["quarter"] or (not in_round["quarter"] and sd.seed <= 4):
+                tally["p_quarter"][i] += 1
+            if sd.team in in_round["semi"]:
+                tally["p_semi"][i] += 1
+            if sd.team in in_round["final"]:
+                tally["p_final"][i] += 1
+        tally["p_title"][index[champion.team]] += 1
+        title_seed_hist[champion.seed] += 1
     for conf, g in title_games.items():  # a played title game: both sides were in it, every time
         if conf in decided:
             for t in (g.home, g.away):
@@ -1025,9 +1182,38 @@ def simulate_playoff(
         columns=["team", "conference", *(str(k) for k in range(used + 1))],
     )
 
+    title_seeds_df = pd.DataFrame(
+        {
+            "seed": np.arange(1, fmt.field_size + 1),
+            "p_final": final_seed_hist[1:] / n_sims,
+            "p_title": title_seed_hist[1:] / n_sims,
+        }
+    )
+    final_pairs = round_pairs["final"]
+    n_finals = sum(final_pairs.values())
+    final_rows = []
+    for (first, second), c in final_pairs.most_common():
+        p_first = win_prob(first, second, True)
+        fav_is_first = p_first >= 0.5
+        fav_wins = final_first_wins[(first, second)] if fav_is_first else c - final_first_wins[(first, second)]
+        final_rows.append(
+            {
+                "home": first,
+                "away": second,
+                "p_matchup": c / n_finals,
+                "p_home": p_first,
+                "favorite": first if fav_is_first else second,
+                "p_favorite": max(p_first, 1.0 - p_first),
+                "p_favorite_sim": fav_wins / c,
+                "proj_score": scorer(first, second, True).text if scorer is not None else None,
+            }
+        )
+    finals_df = pd.DataFrame(final_rows, columns=list(FINAL_COLUMNS))
+
     modal = {conf: counter.most_common(1)[0][0] for conf, counter in champ_counts.items() if counter}
     mean_ranking = sorted(names, key=lambda t: (-score_sum[index[t]], t))
     projected = select_field(mean_ranking, modal, conf_of, fmt)
+    reached = {rnd: {t: float(tally[f"p_{rnd}"][index[t]]) for t in names} for rnd in ("quarter", "semi", "final")}
     return PlayoffSimulation(
         n_sims,
         fmt,
@@ -1036,8 +1222,10 @@ def simulate_playoff(
         title_games_df,
         seeds_df,
         wins_df,
+        title_seeds_df,
+        finals_df,
         projected,
-        bracket_odds(projected, win_prob, scorer),
+        _projected_bracket(projected, round_pairs, reached, win_prob, scorer),
     )
 
 
@@ -1256,11 +1444,12 @@ def simulate_bracket(
     return BracketSimulation(n_sims, pd.DataFrame(rows), titles)
 
 
-def bracket_lines(odds: BracketOdds) -> list[str]:
+def bracket_lines(odds: BracketOdds | Sequence[BracketGame]) -> list[str]:
     """Plain-text bracket: one line per game, first round first."""
+    all_games = odds.games if isinstance(odds, BracketOdds) else list(odds)
     lines = []
     for rnd in ROUNDS:
-        games = [g for g in odds.games if g.round == rnd]
+        games = [g for g in all_games if g.round == rnd]
         if not games:
             continue
         lines.append(f"{ROUND_LABELS[rnd]}:")
@@ -1297,7 +1486,9 @@ def played_bracket_lines(run: BracketRun) -> list[str]:
 
 
 __all__ = [
+    "FINAL_COLUMNS",
     "FORMATS",
+    "GAME_PROJECTION_COLUMNS",
     "GROUP_SIX",
     "POWER_FOUR",
     "ROUNDS",

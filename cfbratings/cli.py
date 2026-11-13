@@ -456,8 +456,20 @@ def cmd_cfp(args: argparse.Namespace) -> int:
                 ]
             ]
         )
-        print("\nProjected bracket (modal champions, mean committee score):")
-        print("\n".join("  " + line for line in bracket_lines(sim.projected_odds)))
+        champ, p_champ = sim.champion
+        print(
+            f"\nSimulated bracket ({champ} won {p_champ:.0%} of the simulated playoffs; the projected field, then the "
+            "most frequent simulated matchup in every later game):"
+        )
+        print("\n".join("  " + line for line in bracket_lines(sim.projected_bracket)))
+        print("\nNational championship games the simulations produced (most frequent first):\n")
+        _print_df(
+            sim.finals.head(args.top)[
+                ["home", "away", "p_matchup", "favorite", "p_favorite", "p_favorite_sim", "proj_score"]
+            ]
+        )
+        print("\nFinals and titles by seed:\n")
+        _print_df(sim.title_seeds)
         table = sim.table
     _export(table, args.csv, args.json)
     return 0
@@ -655,7 +667,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("cfp", help="the Playoff picture: conference races, bracket, odds (--sims for projections)")
     add_model_args(p)
-    p.add_argument("--sims", type=int, default=0, help="simulate the rest of the season this many times")
+    p.add_argument(
+        "--sims", type=int, default=0, help="simulate the rest of the season, playoff included, this many times"
+    )
     p.add_argument(
         "--chalk", action="store_true", help="play the current bracket out with the favourites and projected scores"
     )

@@ -92,7 +92,8 @@ def test_cfp_command(capsys, tmp_path):
     )
     assert code == 0 and "Playoff picture" in out and "Conference races:" in out
     assert "If the season ended today" in out and "First round:" in out and "National Championship:" in out
-    assert "Rest of season simulated 40 times" in out and "Projected bracket" in out
+    assert "Rest of season simulated 40 times" in out and "Simulated bracket" in out
+    assert "National championship games" in out and "p_favorite_sim" in out and "Finals and titles by seed" in out
     rows = json.loads(js.read_text())
     assert len(rows) == 64 and abs(sum(r["p_title"] for r in rows) - 1) < 1e-6
     code, out = run(capsys, "cfp", "--no-ppoints", "--format", "2024", "--weights", "loss=1,champion=0.5")

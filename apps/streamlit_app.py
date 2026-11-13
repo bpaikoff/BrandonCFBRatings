@@ -1268,9 +1268,11 @@ with tab_cfp:
             ]
         )
         st.caption(
-            f"{sim.n_sims} simulations of the {n_unplayed} unplayed games: in each, every game is drawn from its "
-            "win probability, the standings and title games are settled, the committee proxy ranks the simulated "
-            "records, the field is seeded and the bracket's exact odds are taken."
+            f"{sim.n_sims} simulated seasons: in each, every one of the {n_unplayed} unplayed games is drawn from its "
+            "win probability, the standings and title games are settled, every résumé is re-scored on the games as "
+            "played, the committee proxy ranks the simulated records, the field is seeded and the bracket is played "
+            "out game by game. Every percentage below is a frequency over those play-throughs; only the ratings "
+            "themselves are held fixed."
         )
         sp_games, sp_records, sp_titles, sp_odds, sp_dist = st.tabs(
             ["Remaining games", "Projected records", "Title games", "Playoff odds", "Seeds & win totals"]
@@ -1525,11 +1527,88 @@ with tab_cfp:
                     "p_title": pct_bar("Wins title"),
                 },
             )
-            st.markdown(
-                "**Projected bracket** (each conference's most likely champion, teams ranked by mean committee "
-                "score, projected scores for the most likely matchups)"
+            st.caption(
+                "Frequencies over the simulated seasons: how often the team won its conference, made the field, had "
+                "a bye, played a semifinal or a final, and won the national title in the simulated playoffs."
             )
-            st.markdown(bracket_html(sim.projected_odds.games, logo_map, cfp_fmt.byes), unsafe_allow_html=True)
+            sim_champ, p_sim_champ = sim.champion
+            top_final = sim.finals.iloc[0] if not sim.finals.empty else None
+            bye_titles = float(sim.title_seeds.loc[sim.title_seeds["seed"] <= cfp_fmt.byes, "p_title"].sum())
+            kpi_row(
+                [
+                    ("Most frequent champion", sim_champ, f"won {p_sim_champ:.0%} of the simulated playoffs"),
+                    (
+                        "Most frequent final",
+                        f"{top_final['home']} vs {top_final['away']}" if top_final is not None else NO_VALUE,
+                        f"{top_final['p_matchup']:.0%} of the simulated finals" if top_final is not None else None,
+                    ),
+                    ("Title to a bye seed", f"{bye_titles:.0%}", f"seeds 1-{cfp_fmt.byes} win it this often"),
+                ]
+            )
+            st.markdown(
+                "**Simulated bracket** — the projected field (each conference's most frequent champion, teams in "
+                "order of their mean committee score over the simulated seasons); from the quarterfinals on, each "
+                "game shows the pair that met there most often in the simulated playoffs, with the model's chance "
+                "and projected score for that matchup"
+            )
+            st.markdown(
+                bracket_html(sim.projected_bracket, logo_map, cfp_fmt.byes, later_note="most frequent matchup"),
+                unsafe_allow_html=True,
+            )
+            st.markdown("**National championship games** the simulations produced")
+            fin = sim.finals.head(10)
+            fin = fin.assign(
+                home_logo=logos(fin["home"]),
+                away_logo=logos(fin["away"]),
+                matchup=[f"{h} vs {a}" for h, a in zip(fin["home"], fin["away"])],
+                fav_logo=logos(fin["favorite"]),
+            )
+            st.dataframe(
+                percent_cols(fin, ["p_matchup", "p_favorite", "p_favorite_sim"])[
+                    [
+                        "home_logo",
+                        "away_logo",
+                        "matchup",
+                        "p_matchup",
+                        "fav_logo",
+                        "favorite",
+                        "p_favorite",
+                        "p_favorite_sim",
+                        "proj_score",
+                    ]
+                ],
+                hide_index=True,
+                width="stretch",
+                height=table_height(len(fin)),
+                column_config={
+                    "home_logo": logo_col(),
+                    "away_logo": logo_col(),
+                    "matchup": st.column_config.TextColumn("Final", help="Neutral site; better-rated team first"),
+                    "p_matchup": pct_bar("This final"),
+                    "fav_logo": logo_col(),
+                    "favorite": "Favourite",
+                    "p_favorite": pct_num("Model", help="The favourite's calibrated chance in that game"),
+                    "p_favorite_sim": pct_num("Won it", help="How often the favourite won when this final was played"),
+                    "proj_score": st.column_config.TextColumn("Proj. score", help="In matchup order", width="small"),
+                },
+            )
+            st.caption(
+                "How often each pairing was the national championship game across the simulations, the model's "
+                "favourite in that game with its chance, and how often that favourite actually won those finals."
+            )
+            st.markdown("**Finals and titles by seed**")
+            ts = sim.title_seeds
+            st.dataframe(
+                percent_cols(ts, ["p_final", "p_title"])[["seed", "p_final", "p_title"]],
+                hide_index=True,
+                width=520,
+                height=table_height(len(ts)),
+                column_config={
+                    "seed": st.column_config.NumberColumn("Seed", width="small"),
+                    "p_final": pct_bar("Reaches final"),
+                    "p_title": pct_bar("Wins title"),
+                },
+            )
             st.download_button(
                 "Download playoff projections CSV",
                 sim.table.to_csv(index=False).encode(),
@@ -1586,7 +1665,7 @@ with tab_cfp:
         "Field",
         field_sources,
         horizontal=True,
-        help="Current: if the season ended today. Projected: the simulation's modal field.",
+        help="Current: if the season ended today. Projected: the season simulation's projected field.",
     )
     if field_src == "Current bracket":
         po_field = pic.field

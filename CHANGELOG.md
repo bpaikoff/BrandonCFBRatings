@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### The season simulation plays the whole season out, playoff included
+- `cfp.simulate_playoff` no longer freezes the committee's inputs at the current week. Each
+  simulated season re-scores every team's PPoints résumé on the games as played (new
+  `ppoints.PPointsScorer`, whose `credit` prices any game, played or not: what a win is worth to
+  each side and what a loss costs, with the opponent's tier and conference strength from the
+  current ratings), so a team that wins out climbs the committee proxy's ranking on its record
+  *and* its résumé, and a team that loses falls on both. Only the ratings themselves are held
+  fixed. `ppoints()` is unchanged and now a thin wrapper over the scorer.
+- The bracket is played inside every simulation, game by game, instead of being scored by the
+  exact odds of a bracket built from the current ratings: `p_quarter` … `p_title` are frequencies
+  over the simulated playoffs, and the simulation reports what those play-throughs produced — the
+  national championship games (`finals`: how often each pair met, the model's favourite and how
+  often it actually won), the finals and titles by seed (`title_seeds`), the most frequent champion
+  (`PlayoffSimulation.champion`) and a simulated bracket (`projected_bracket`: the projected
+  field's first round, then in every later game the pair of teams from its two sides that met
+  there most often). `projected_odds` (exact odds for the projected field) is gone;
+  `bracket_lines` also takes a list of games.
+- Dashboard **Playoff → Season projection → Playoff odds**: the simulated bracket, the most
+  frequent finals and the titles by seed, with the most frequent champion and final as stat tiles;
+  the captions say what is simulated and what is held fixed. `cfbratings cfp --sims N` prints the
+  same. Methodology section 7 updated.
+
 ### Projected scores, and a Playoff tab that projects the whole season
 - New `cfbratings.scores`: `fit_score_model` fits every team's offence and defence
   (points scored and allowed above the league mean, home-field split in two) on the season's

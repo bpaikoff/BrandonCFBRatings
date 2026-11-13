@@ -84,7 +84,7 @@ def test_dashboard_runs_in_demo_mode():
     assert any("Playoff" in label for label in labels)
     page = " ".join(m.value for m in at.markdown)
     assert "First round" in page and "National Championship" in page  # the bracket is drawn
-    assert any("Projected bracket" in m.value for m in at.markdown)  # and the simulated one
+    assert any("Simulated bracket" in m.value for m in at.markdown)  # and the simulated one
     assert at.title[0].value.startswith("College Football Ratings")
     assert any("warm-started" in c.value for c in at.caption)
 

@@ -25,6 +25,7 @@ from cfbratings.cfp import (
 from cfbratings.data import synthetic_season
 from cfbratings.data.schema import Game, Team, is_independent
 from cfbratings.models import make_model
+from cfbratings.models.base import RatingResult
 from cfbratings.ppoints import ppoints
 from cfbratings.predict import MarginCalibrator
 
@@ -301,12 +302,117 @@ def test_playoff_picture_and_simulation_on_synthetic_season():
     for _, grp in sim.champions.groupby("conference"):
         assert grp["p_champion"].sum() == pytest.approx(1.0)
     assert sim.champions["conference"].nunique() == 6
-    assert len(sim.projected_field) == 12 and sim.projected_odds.table["p_title"].sum() == pytest.approx(1.0)
+    assert len(sim.projected_field) == 12 and len(sim.projected_bracket) == 11  # 4 + 4 + 2 + 1 games
+    # the field's first round and bye seeds are the projected bracket's; later rounds the simulated matchups
+    by_seed = {s.seed: s.team for s in sim.projected_field}
+    first = {
+        (g.home.seed, g.away.seed): (g.home.team, g.away.team) for g in sim.projected_bracket if g.round == "first"
+    }
+    assert first == {
+        (5, 12): (by_seed[5], by_seed[12]),
+        (8, 9): (by_seed[8], by_seed[9]),
+        (6, 11): (by_seed[6], by_seed[11]),
+        (7, 10): (by_seed[7], by_seed[10]),
+    }
+    quarters = {g.home.seed: g for g in sim.projected_bracket if g.round == "quarter"}
+    assert set(quarters) == {1, 2, 3, 4}
+    for k, g in quarters.items():
+        assert g.home.team == by_seed[k] and g.neutral and 0 < g.p_home < 1
+    assert {g.home.seed for g in quarters.values()} == {1, 2, 3, 4}
+    assert sum(1 for g in sim.projected_bracket if g.round == "semi") == 2
+    final = next(g for g in sim.projected_bracket if g.round == "final")
+    assert final.home.seed < final.away.seed and final.home.team != final.away.team
+    # the finals and the champions' seeds are frequencies over the play-throughs
+    assert sim.finals["p_matchup"].sum() == pytest.approx(1.0) and (sim.finals["p_favorite"] >= 0.5).all()
+    assert sim.finals["p_favorite_sim"].between(0, 1).all()
+    assert sim.title_seeds["p_title"].sum() == pytest.approx(1.0) and sim.title_seeds["p_final"].sum() == pytest.approx(
+        2.0
+    )
+    assert list(sim.title_seeds["seed"]) == list(range(1, 13))
+    champ, p_champ = sim.champion
+    assert champ == t.iloc[0]["team"] and p_champ == t.iloc[0]["p_title"]
+    # the drawn bracket is one bracket: every team in it is in the field and appears once per round
+    in_field = {s.team for s in sim.projected_field}
+    for rnd in ("first", "quarter", "semi", "final"):
+        played = [x for g in sim.projected_bracket if g.round == rnd for x in (g.home.team, g.away.team)]
+        assert len(played) == len(set(played)) and set(played) <= in_field
     # the best-rated team is a favourite: top-3 in title odds
     best = result.ranked()[0][0]
     assert best in set(t.head(3)["team"])
     # seeds and byes agree with the format
     assert t.loc[t["mean_seed"].notna(), "mean_seed"].between(1, 12).all()
+
+
+def test_simulated_resume_moves_with_the_simulated_results():
+    """The résumé is re-scored on each simulated season: with the same PPoints today, a team certain to
+    beat a top opponent in its one remaining game ranks higher in the committee proxy than one certain to
+    lose to it, and the playoff it reaches is played out from there."""
+    teams = [Team(t, "X") for t in "ABCD"] + [Team(t, "Y") for t in "EFGH"]
+    games = [
+        _game(1, "A", "B", 30, 0, hc="X", ac="X"),
+        _game(2, "C", "D", 30, 0, hc="X", ac="X"),
+        _game(3, "E", "F", 30, 0, hc="Y", ac="Y"),
+        _game(4, "G", "H", 30, 0, hc="Y", ac="Y"),
+        _game(5, "C", "E", week=5, hc="X", ac="Y"),  # the one unplayed game: C hosts E, non-conference
+    ]
+    names = [t.school for t in teams]
+    fmt = CFPFormat(field_size=4, byes=0, power_conferences=("X", "Y"), group_bids=0, neutral_championships=())
+    cal = MarginCalibrator(slope=1.0, intercept=0.0, sigma=0.01, n_games=5, source="prior")  # the better team wins
+    resume_only = SeedingWeights(rating=0.0, resume=1.0, loss=0.0, champion=0.0)
+    today = dict.fromkeys(names, 0.0)  # every résumé blank today: only the simulated games can tell them apart
+
+    def run(ratings):
+        result = RatingResult("massey", ratings)
+        return simulate_playoff(
+            teams, games, result, cal, ppoints=today, weights=resume_only, fmt=fmt, n_sims=10, seed=0
+        )
+
+    strong = {"A": 10.0, "B": 0.0, "C": 20.0, "D": 0.0, "E": 15.0, "F": 0.0, "G": 5.0, "H": 0.0}  # C beats E
+    weak = {**strong, "C": 1.0}  # E beats C
+    c_wins = run(strong).table.set_index("team")
+    c_loses = run(weak).table.set_index("team")
+    assert c_wins.loc["C", "committee_score"] > c_loses.loc["C", "committee_score"]
+    assert c_wins.loc["C", "committee_score"] > 0 > c_loses.loc["C", "committee_score"]  # best and worst résumé
+    assert c_wins.loc["C", "p_title"] == 1.0  # the best team, certain of every game, wins the simulated playoff
+    assert c_wins.loc["C", "mode_record"] == "3-0"  # the pending game and the title game both won
+    # without a résumé today there is nothing to re-score, and the résumé term is simply off
+    bare = simulate_playoff(teams, games, RatingResult("massey", strong), cal, weights=resume_only, fmt=fmt, n_sims=5)
+    assert (bare.table["committee_score"] == 0).all()
+
+
+def test_ppoints_credit_prices_each_game_consistently():
+    """Scoring a season equals applying every game's credit from zero, played or priced beforehand."""
+    from cfbratings.ppoints import PPointsScorer
+
+    season, result, _cal, _scores = _fitted()
+    names = season.team_names
+    scorer = PPointsScorer(names, result.ratings, season.conference_map)
+    expected = ppoints(names, season.games, result.ratings, season.conference_map)
+    scores = dict.fromkeys(names, 0.0)
+    for g in season.games:
+        if g.has_score and g.margin != 0:
+            scorer.credit(g).apply(scores, g.home, g.away, g.margin > 0)
+    assert scores == pytest.approx(expected)
+    # a priced game is worth the same whether it is on the schedule or described by hand
+    g = next(g for g in season.games if not g.has_score)
+    by_hand = scorer.credit_for(
+        g.home, g.away, neutral=g.neutral_site, home_conference=g.home_conference, away_conference=g.away_conference
+    )
+    assert by_hand == scorer.credit(g)  # an unplayed game has no snapshot: priced on the current ratings
+    assert by_hand.home_win > 0 and by_hand.away_win > 0 and by_hand.home_loss > 0 and by_hand.away_loss > 0
+    # at a neutral site the home side earns the road bonus too; the road side is priced the same
+    neutral = scorer.credit_for(
+        g.home, g.away, neutral=True, home_conference=g.home_conference, away_conference=g.away_conference
+    )
+    hosted = scorer.credit_for(
+        g.home, g.away, neutral=False, home_conference=g.home_conference, away_conference=g.away_conference
+    )
+    assert neutral.home_win == pytest.approx(hosted.home_win * scorer.cfg.away_bonus)
+    assert (neutral.away_win, neutral.home_loss, neutral.away_loss) == (
+        hosted.away_win,
+        hosted.home_loss,
+        hosted.away_loss,
+    )
 
 
 def test_simulation_respects_played_title_game():
@@ -415,8 +521,9 @@ def test_simulation_reports_records_title_games_and_seeds():
     # win totals: every row is a distribution
     win_cols = [c for c in sim.wins.columns if c not in ("team", "conference")]
     assert np.allclose(sim.wins[win_cols].sum(axis=1), 1.0)
-    # the projected bracket carries projected scores
-    assert all(g.score is not None for g in sim.projected_odds.games)
+    # the projected bracket and the finals carry projected scores
+    assert all(g.score is not None for g in sim.projected_bracket)
+    assert sim.finals["proj_score"].str.match(r"^\d+-\d+$").all()
 
 
 def test_neutral_title_game_is_one_matchup_whoever_leads():
